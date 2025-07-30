@@ -1,0 +1,46 @@
+services:
+  knowledge-ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: donpetre-ingestion
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+
+      # Database Configuration
+      DB_HOST: postgresql
+      DB_PORT: 5432
+      DB_NAME: donpetre
+      DB_USERNAME: ${DB_USER:-don}
+      DB_PASSWORD: ${DB_PASSWORD:-don_pass}
+
+      # Security Configuration
+      GATEWAY_HOST: api-gateway
+      GATEWAY_PORT: 8080
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      R2DBC_LOG_LEVEL: ${R2DBC_LOG_LEVEL:-INFO}
+
+      # JVM Options
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
+
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - donpetre-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+networks:
+  donpetre-network:
+    external: true
