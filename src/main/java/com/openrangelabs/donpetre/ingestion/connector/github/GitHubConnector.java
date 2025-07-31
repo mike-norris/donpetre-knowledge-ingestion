@@ -5,6 +5,7 @@ import com.openrangelabs.donpetre.ingestion.connector.AbstractDataConnector;
 import com.openrangelabs.donpetre.ingestion.model.RateLimitStatus;
 import com.openrangelabs.donpetre.ingestion.entity.ConnectorConfig;
 import com.openrangelabs.donpetre.ingestion.model.*;
+import lombok.extern.slf4j.Slf4j;
 import org.kohsuke.github.*;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -21,10 +22,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * GitHub connector implementation
  * Handles repositories, commits, issues, pull requests, and wiki content
  */
+@Slf4j
 @Component
 public class GitHubConnector extends AbstractDataConnector {
 
     private static final String CONNECTOR_TYPE = "github";
+
+    // Rate limiting constants
+    private static final int MAX_RETRIES = 3;
+    private static final long RETRY_DELAY_MS = 1000;
 
     @Override
     public String getConnectorType() {
@@ -63,6 +69,54 @@ public class GitHubConnector extends AbstractDataConnector {
                 });
     }
 
+    private void handleRateLimit(GitHub github) throws IOException, InterruptedException {
+        GHRateLimit rateLimit = github.getRateLimit();
+        if (rateLimit.getRemaining() < 10) {
+            long sleepTime = rateLimit.getResetDate().getTime() - System.currentTimeMillis();
+            if (sleepTime > 0) {
+                log.info("Rate limit nearly exceeded. Sleeping for {} ms", sleepTime);
+                Thread.sleep(sleepTime);
+            }
+        }
+    }
+
+    private Flux<KnowledgeItem> fetchCommitsPaginated(GHRepository repo, SyncContext context) {
+        return Flux.create(sink -> {
+            try {
+                PagedIterable<GHCommit> commits = repo.listCommits();
+                if (context.getLastSyncTime() != null) {
+                    Date since = Date.from(context.getLastSyncTime().atZone(ZoneId.systemDefault()).toInstant());
+                    commits = repo.queryCommits().since(since).list();
+                }
+
+                for (GHCommit commit : commits.withPageSize(100)) {
+                    try {
+                        KnowledgeItem item = createKnowledgeItemFromCommit(repo, commit);
+                        sink.next(item);
+                    } catch (Exception e) {
+                        log.warn("Failed to process commit {}: {}", commit.getSHA1(), e.getMessage());
+                    }
+                }
+                sink.complete();
+            } catch (Exception e) {
+                sink.error(e);
+            }
+        });
+    }
+
+    private void validateRepositoryAccess(GHRepository repo) throws IOException {
+        if (repo == null) {
+            throw new IllegalArgumentException("Repository cannot be null");
+        }
+
+        // Check if we have read access
+        try {
+            repo.getDescription(); // Simple call to test access
+        } catch (GHFileNotFoundException e) {
+            throw new IllegalArgumentException("Repository not found or no access: " + repo.getFullName());
+        }
+    }
+
     @Override
     protected Mono<SyncResult> doFullSync(ConnectorConfig config) {
         LocalDateTime startTime = LocalDateTime.now();
@@ -71,9 +125,12 @@ public class GitHubConnector extends AbstractDataConnector {
 
         return fetchData(config, SyncContext.forFullSync())
                 .doOnNext(item -> processedCount.incrementAndGet())
-                .doOnError(error -> failedCount.incrementAndGet())
+                .doOnError(error -> {
+                    failedCount.incrementAndGet();
+                    log.warn("Failed to process GitHub item: {}", error.getMessage());
+                })
                 .onErrorContinue((error, item) -> {
-                    logger.warn("Failed to process GitHub item: {}", error.getMessage());
+                    log.warn("Failed to process GitHub item: {}", error.getMessage());
                 })
                 .then(Mono.fromCallable(() ->
                         SyncResult.builder(CONNECTOR_TYPE, SyncType.FULL)
@@ -234,19 +291,23 @@ public class GitHubConnector extends AbstractDataConnector {
     private Flux<KnowledgeItem> fetchCommits(GHRepository repo, SyncContext context) {
         return Flux.fromIterable(() -> {
                     try {
-                        PagedIterable<GHCommit> commits = repo.listCommits();
+                        PagedIterable<GHCommit> commits;
                         if (context.getLastSyncTime() != null) {
                             Date since = Date.from(context.getLastSyncTime().atZone(ZoneId.systemDefault()).toInstant());
-                            commits = repo.listCommits().since(since);
+                            // Use queryCommits() for proper since filtering
+                            commits = repo.queryCommits().since(since).list();
+                        } else {
+                            commits = repo.listCommits();
                         }
                         return commits.iterator();
                     } catch (IOException e) {
+                        log.error("Failed to list commits for repository {}: {}", repo.getFullName(), e.getMessage());
                         throw new RuntimeException("Failed to list commits", e);
                     }
                 })
                 .map(commit -> createKnowledgeItemFromCommit(repo, commit))
                 .onErrorContinue((error, commit) -> {
-                    logger.warn("Failed to process commit {}: {}", commit, error.getMessage());
+                    log.warn("Failed to process commit {}: {}", commit, error.getMessage());
                 });
     }
 
@@ -349,27 +410,36 @@ public class GitHubConnector extends AbstractDataConnector {
             StringBuilder content = new StringBuilder();
             content.append(issue.getBody() != null ? issue.getBody() : "");
 
-            // Add comments
-            for (GHIssueComment comment : issue.getComments()) {
-                content.append("\n\n--- Comment by ").append(comment.getUser().getLogin())
-                        .append(" ---\n").append(comment.getBody());
+            List<GHIssueComment> comments = issue.getComments();
+            if (comments != null) {
+                for (GHIssueComment comment : comments) {
+                    if (comment.getUser() != null && comment.getBody() != null) {
+                        content.append("\n\n--- Comment by ").append(comment.getUser().getLogin())
+                                .append(" ---\n").append(comment.getBody());
+                    }
+                }
             }
+
+            List<String> labelNames = issue.getLabels().stream()
+                    .map(GHLabel::getName)
+                    .collect(Collectors.toList());
 
             return KnowledgeItem.builder()
                     .title("Issue #" + issue.getNumber() + ": " + issue.getTitle())
                     .content(content.toString())
                     .sourceType("github_issue")
                     .sourceReference(repo.getFullName() + "/issues/" + issue.getNumber())
-                    .author(issue.getUser().getLogin())
+                    .author(issue.getUser() != null ? issue.getUser().getLogin() : "Unknown")
                     .createdAt(issue.getCreatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("issue_number", issue.getNumber())
                     .addMetadata("state", issue.getState().toString())
                     .addMetadata("url", issue.getHtmlUrl().toString())
-                    .addMetadata("labels", issue.getLabels().stream().map(GHLabel::getName).toList())
+                    .addMetadata("labels", labelNames)
                     .addMetadata("comments_count", issue.getCommentsCount())
                     .build();
         } catch (IOException e) {
+            log.error("Failed to create knowledge item from issue {}: {}", issue.getNumber(), e.getMessage());
             throw new RuntimeException("Failed to create knowledge item from issue", e);
         }
     }
