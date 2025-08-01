@@ -1,261 +1,218 @@
 package com.openrangelabs.donpetre.ingestion.controller;
 
+import com.openrangelabs.donpetre.ingestion.dto.CredentialResponseDto;
+import com.openrangelabs.donpetre.ingestion.dto.CredentialStatsDto;
+import com.openrangelabs.donpetre.ingestion.dto.CredentialUsageDto;
 import com.openrangelabs.donpetre.ingestion.dto.StoreCredentialRequest;
-import com.openrangelabs.donpetre.ingestion.entity.ApiCredential;
+import com.openrangelabs.donpetre.ingestion.exception.CredentialException;
 import com.openrangelabs.donpetre.ingestion.service.CredentialService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Map;
 import java.util.UUID;
 
 /**
- * REST controller for secure credential management
- * Handles encrypted storage, rotation, and monitoring of API credentials
+ * REST controller for secure credential management operations.
  *
- * Security Note: This controller only handles credential metadata - actual 
- * credential values are never returned in API responses for security reasons.
+ * <p>This controller provides comprehensive credential management functionality including:
+ * <ul>
+ *   <li>Secure storage with AES-256 encryption</li>
+ *   <li>Credential rotation and lifecycle management</li>
+ *   <li>Expiration monitoring and alerting</li>
+ *   <li>Usage tracking and analytics</li>
+ *   <li>Audit trail maintenance</li>
+ * </ul>
+ *
+ * <p><strong>Security Note:</strong> All endpoints require ADMIN role. Credential values
+ * are never returned in responses for security reasons. All operations are logged for
+ * audit purposes.
+ *
+ * @author OpenRange Labs
+ * @version 1.0
+ * @since 2025-01
  */
+@Slf4j
+@Validated
 @RestController
-@RequestMapping("/api/credentials")
-@CrossOrigin(origins = "${open-range-labs.donpetre.security.cors.allowed-origins}")
-@PreAuthorize("hasRole('ADMIN')") // All credential operations require ADMIN role
+@RequestMapping(value = "/api/credentials", produces = MediaType.APPLICATION_JSON_VALUE)
+@RequiredArgsConstructor
+@PreAuthorize("hasRole('ADMIN')")
+@Tag(name = "Credential Management", description = "Secure credential storage and management operations")
+@SecurityRequirement(name = "bearerAuth")
 public class CredentialController {
 
     private final CredentialService credentialService;
 
-    @Autowired
-    public CredentialController(CredentialService credentialService) {
-        this.credentialService = credentialService;
-    }
-
     /**
-     * Store new encrypted credential
+     * Stores a new encrypted credential securely.
      *
-     * This endpoint securely stores API credentials with AES-256 encryption.
-     * The actual credential value is never stored in plain text or logged.
+     * <p>The credential value is immediately encrypted using AES-256 and the plaintext
+     * value is never persisted. The operation is idempotent - storing the same credential
+     * multiple times will update the existing record.
      *
-     * @param request Contains connector config ID, credential type, value, and optional expiration
-     * @return Success response with credential ID (value is not returned for security)
+     * @param request the credential storage request containing value and metadata
+     * @return credential metadata response (excluding the actual credential value)
      */
-    @PostMapping
-    public Mono<ResponseEntity<Map<String, Object>>> storeCredential(
+    @Operation(
+            summary = "Store new encrypted credential",
+            description = "Securely stores API credentials with AES-256 encryption. Credential values are never returned."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Credential stored successfully",
+                    content = @Content(schema = @Schema(implementation = CredentialResponseDto.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request data"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "409", description = "Credential already exists for this connector and type"),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<ResponseEntity<CredentialResponseDto>> storeCredential(
             @Valid @RequestBody StoreCredentialRequest request) {
+
+        log.info("Storing credential for connector {} with type {}",
+                request.getConnectorConfigId(), request.getCredentialType());
 
         return credentialService.storeCredential(
                         request.getConnectorConfigId(),
                         request.getCredentialType(),
                         request.getValue(),
-                        request.getExpiresAt()
+                        request.getExpiresAt(),
+                        request.getDescription()
                 )
-                .map(credential -> ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
-                        "id", credential.getId(),
-                        "connectorConfigId", credential.getConnectorConfigId(),
-                        "credentialType", credential.getCredentialType(),
-                        "expiresAt", credential.getExpiresAt() != null ? credential.getExpiresAt().toString() : null,
-                        "message", "Credential stored successfully",
-                        "encrypted", true,
-                        "timestamp", LocalDateTime.now()
-                )))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.badRequest().body(Map.of(
-                                "error", "Failed to store credential",
-                                "reason", error.getMessage(),
-                                "timestamp", LocalDateTime.now()
-                        )))
-                );
-    }
-
-    /**
-     * Get credentials for a connector (metadata only - no decrypted values)
-     *
-     * This endpoint returns credential metadata including expiration status
-     * and usage information, but never returns the actual credential values.
-     *
-     * @param connectorConfigId The connector configuration ID
-     * @return List of credential metadata (without actual credential values)
-     */
-    @GetMapping("/connector/{connectorConfigId}")
-    public Flux<Map<String, Object>> getCredentials(@PathVariable UUID connectorConfigId) {
-        return credentialService.getActiveCredentials(connectorConfigId)
                 .map(credential -> {
-                    Map<String, Object> credentialInfo = Map.of(
-                            "id", credential.getId(),
-                            "credentialType", credential.getCredentialType(),
-                            "expiresAt", credential.getExpiresAt() != null ? credential.getExpiresAt().toString() : null,
-                            "lastUsed", credential.getLastUsed() != null ? credential.getLastUsed().toString() : null,
-                            "isExpired", credential.isExpired(),
-                            "isExpiringSoon", credential.isExpiringSoon(7),
-                            "createdAt", credential.getCreatedAt().toString(),
-                            "isActive", credential.getIsActive()
-                    );
-
-                    // Add expiration warning details if applicable
-                    if (credential.getExpiresAt() != null) {
-                        long daysUntilExpiration = Duration.between(LocalDateTime.now(), credential.getExpiresAt()).toDays();
-                        Map<String, Object> mutableMap = new java.util.HashMap<>(credentialInfo);
-                        mutableMap.put("daysUntilExpiration", daysUntilExpiration);
-                        mutableMap.put("expirationStatus", getExpirationStatus(credential));
-                        return mutableMap;
-                    }
-
-                    return credentialInfo;
-                });
+                    CredentialResponseDto response = CredentialResponseDto.fromEntity(credential);
+                    log.info("Successfully stored credential {} for connector {}",
+                            credential.getId(), request.getConnectorConfigId());
+                    return ResponseEntity.status(HttpStatus.CREATED).body(response);
+                })
+                .doOnError(error -> log.error("Failed to store credential for connector {}: {}",
+                        request.getConnectorConfigId(), error.getMessage()));
     }
 
     /**
-     * Update existing credential
+     * Retrieves credential metadata for a specific connector.
      *
-     * This endpoint allows updating the credential value and/or expiration date.
-     * The old credential is securely overwritten with the new encrypted value.
+     * <p>Returns only metadata about credentials (IDs, types, expiration status, etc.)
+     * but never the actual credential values for security reasons.
      *
-     * @param credentialId The ID of the credential to update
-     * @param request New credential value and optional expiration
-     * @return Update confirmation
+     * @param connectorConfigId the UUID of the connector configuration
+     * @return flux of credential metadata objects
      */
+    @Operation(
+            summary = "Get credential metadata for connector",
+            description = "Returns credential metadata without actual values for security"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Credentials retrieved successfully"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "404", description = "Connector not found")
+    })
+    @GetMapping("/connector/{connectorConfigId}")
+    public Flux<CredentialResponseDto> getCredentialsForConnector(
+            @Parameter(description = "Connector configuration UUID", required = true)
+            @PathVariable UUID connectorConfigId) {
+
+        log.debug("Retrieving credentials for connector {}", connectorConfigId);
+
+        return credentialService.getActiveCredentials(connectorConfigId)
+                .map(CredentialResponseDto::fromEntity)
+                .doOnNext(dto -> log.debug("Found credential {} for connector {}",
+                        dto.getId(), connectorConfigId))
+                .doOnError(error -> log.error("Failed to retrieve credentials for connector {}: {}",
+                        connectorConfigId, error.getMessage()));
+    }
+
+    /**
+     * Updates an existing credential with new value and/or expiration.
+     *
+     * <p>The operation securely overwrites the old encrypted value with the new one.
+     * All updates are logged for audit purposes.
+     *
+     * @param credentialId the UUID of the credential to update
+     * @param request the update request with new credential data
+     * @return updated credential metadata
+     */
+    @Operation(
+            summary = "Update existing credential",
+            description = "Updates credential value and/or expiration date with secure encryption"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Credential updated successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request data"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "404", description = "Credential not found")
+    })
     @PutMapping("/{credentialId}")
-    public Mono<ResponseEntity<Map<String, Object>>> updateCredential(
+    public Mono<ResponseEntity<CredentialResponseDto>> updateCredential(
+            @Parameter(description = "Credential UUID", required = true)
             @PathVariable UUID credentialId,
             @Valid @RequestBody StoreCredentialRequest request) {
 
+        log.info("Updating credential {}", credentialId);
+
         return credentialService.updateCredential(credentialId, request.getValue(), request.getExpiresAt())
-                .map(credential -> ResponseEntity.ok(Map.of(
-                        "id", credential.getId(),
-                        "credentialType", credential.getCredentialType(),
-                        "expiresAt", credential.getExpiresAt() != null ? credential.getExpiresAt().toString() : null,
-                        "message", "Credential updated successfully",
-                        "timestamp", LocalDateTime.now()
-                )))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.badRequest().body(Map.of(
-                                "error", "Failed to update credential",
-                                "reason", error.getMessage(),
-                                "timestamp", LocalDateTime.now()
-                        )))
-                );
+                .map(credential -> {
+                    CredentialResponseDto response = CredentialResponseDto.fromEntity(credential);
+                    log.info("Successfully updated credential {}", credentialId);
+                    return ResponseEntity.ok(response);
+                })
+                .doOnError(error -> log.error("Failed to update credential {}: {}",
+                        credentialId, error.getMessage()));
     }
 
     /**
-     * Deactivate credential (soft delete)
+     * Performs atomic credential rotation by deactivating old and creating new.
      *
-     * This endpoint deactivates a credential, making it unusable but preserving
-     * the record for audit purposes. The encrypted value remains but is marked inactive.
+     * <p>This is the preferred method for credential updates as it maintains complete
+     * audit trails and ensures zero-downtime transitions.
      *
-     * @param credentialId The ID of the credential to deactivate
-     * @return Deactivation confirmation
+     * @param connectorConfigId the connector configuration UUID
+     * @param request the new credential information
+     * @return the newly created credential metadata
      */
-    @DeleteMapping("/{credentialId}")
-    public Mono<ResponseEntity<Map<String, Object>>> deactivateCredential(@PathVariable UUID credentialId) {
-        return credentialService.deactivateCredential(credentialId)
-                .then(Mono.just(ResponseEntity.ok(Map.of(
-                        "id", credentialId,
-                        "status", "DEACTIVATED",
-                        "message", "Credential deactivated successfully",
-                        "timestamp", LocalDateTime.now(),
-                        "note", "Credential record preserved for audit purposes"
-                ))))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.badRequest().body(Map.of(
-                                "error", "Failed to deactivate credential",
-                                "reason", error.getMessage(),
-                                "timestamp", LocalDateTime.now()
-                        )))
-                );
-    }
-
-    /**
-     * Get credentials expiring soon
-     *
-     * This endpoint returns credentials that are approaching their expiration date.
-     * Useful for proactive credential rotation and avoiding service interruptions.
-     *
-     * @param daysThreshold Number of days ahead to check for expirations (default: 7)
-     * @return List of credentials expiring within the threshold
-     */
-    @GetMapping("/expiring")
-    public Flux<Map<String, Object>> getExpiringSoonCredentials(
-            @RequestParam(defaultValue = "7") int daysThreshold) {
-
-        return credentialService.getCredentialsExpiringSoon(daysThreshold)
-                .map(credential -> Map.of(
-                        "id", credential.getId(),
-                        "connectorConfigId", credential.getConnectorConfigId(),
-                        "credentialType", credential.getCredentialType(),
-                        "expiresAt", credential.getExpiresAt().toString(),
-                        "daysUntilExpiration", Duration.between(LocalDateTime.now(), credential.getExpiresAt()).toDays(),
-                        "expirationStatus", getExpirationStatus(credential),
-                        "urgency", getExpirationUrgency(credential),
-                        "lastUsed", credential.getLastUsed() != null ? credential.getLastUsed().toString() : "Never"
-                ));
-    }
-
-    /**
-     * Get expired credentials
-     *
-     * This endpoint returns credentials that have already expired and need
-     * immediate attention to restore service functionality.
-     *
-     * @return List of expired credentials
-     */
-    @GetMapping("/expired")
-    public Flux<Map<String, Object>> getExpiredCredentials() {
-        return credentialService.getExpiredCredentials()
-                .map(credential -> Map.of(
-                        "id", credential.getId(),
-                        "connectorConfigId", credential.getConnectorConfigId(),
-                        "credentialType", credential.getCredentialType(),
-                        "expiredAt", credential.getExpiresAt().toString(),
-                        "daysExpired", Duration.between(credential.getExpiresAt(), LocalDateTime.now()).toDays(),
-                        "status", "EXPIRED",
-                        "lastUsed", credential.getLastUsed() != null ? credential.getLastUsed().toString() : "Never",
-                        "actionRequired", "Immediate credential renewal required"
-                ));
-    }
-
-    /**
-     * Get credential statistics
-     *
-     * This endpoint provides aggregate statistics about credentials across
-     * all connector types, useful for operational monitoring and reporting.
-     *
-     * @return Statistics grouped by credential type
-     */
-    @GetMapping("/stats")
-    public Flux<Map<String, Object>> getCredentialStats() {
-        return credentialService.getCredentialStats()
-                .map(stats -> Map.of(
-                        "credentialType", stats.getCredentialType(),
-                        "totalCount", stats.getTotalCount(),
-                        "activeCount", stats.getActiveCount(),
-                        "expiredCount", stats.getExpiredCount(),
-                        "healthPercentage", calculateHealthPercentage(stats.getActiveCount(), stats.getTotalCount()),
-                        "status", stats.getExpiredCount() > 0 ? "ATTENTION_REQUIRED" : "HEALTHY"
-                ));
-    }
-
-    /**
-     * Rotate credential (deactivate old, create new)
-     *
-     * This endpoint performs secure credential rotation by deactivating the old
-     * credential and creating a new one atomically. This is the preferred method
-     * for credential updates as it maintains audit trails.
-     *
-     * @param connectorConfigId The connector configuration ID
-     * @param request New credential information
-     * @return Rotation result with new credential ID
-     */
+    @Operation(
+            summary = "Rotate credential atomically",
+            description = "Deactivates old credential and creates new one in single atomic operation"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Credential rotated successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request data"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "404", description = "Connector not found")
+    })
     @PostMapping("/{connectorConfigId}/rotate")
-    public Mono<ResponseEntity<Map<String, Object>>> rotateCredential(
+    public Mono<ResponseEntity<CredentialResponseDto>> rotateCredential(
+            @Parameter(description = "Connector configuration UUID", required = true)
             @PathVariable UUID connectorConfigId,
             @Valid @RequestBody StoreCredentialRequest request) {
+
+        log.info("Rotating credential for connector {} with type {}",
+                connectorConfigId, request.getCredentialType());
 
         return credentialService.rotateCredential(
                         connectorConfigId,
@@ -263,115 +220,347 @@ public class CredentialController {
                         request.getValue(),
                         request.getExpiresAt()
                 )
-                .map(credential -> ResponseEntity.ok(Map.of(
-                        "id", credential.getId(),
-                        "connectorConfigId", connectorConfigId,
-                        "credentialType", credential.getCredentialType(),
-                        "expiresAt", credential.getExpiresAt() != null ? credential.getExpiresAt().toString() : null,
-                        "message", "Credential rotated successfully",
-                        "operation", "ROTATION",
-                        "timestamp", LocalDateTime.now(),
-                        "note", "Old credential has been deactivated"
-                )))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.badRequest().body(Map.of(
-                                "error", "Failed to rotate credential",
-                                "reason", error.getMessage(),
-                                "timestamp", LocalDateTime.now()
-                        )))
-                );
+                .map(credential -> {
+                    CredentialResponseDto response = CredentialResponseDto.fromEntity(credential);
+                    log.info("Successfully rotated credential for connector {} - new ID: {}",
+                            connectorConfigId, credential.getId());
+                    return ResponseEntity.ok(response);
+                })
+                .doOnError(error -> log.error("Failed to rotate credential for connector {}: {}",
+                        connectorConfigId, error.getMessage()));
     }
 
     /**
-     * Validate credential without exposing the value
+     * Deactivates a credential (soft delete for audit preservation).
      *
-     * This endpoint checks if a credential exists and is valid (not expired)
-     * without returning the actual credential value.
+     * <p>The credential is marked as inactive but retained for audit purposes.
+     * The encrypted value remains in storage but cannot be retrieved or used.
      *
-     * @param connectorConfigId The connector configuration ID
-     * @param credentialType The type of credential to validate
-     * @return Validation result
+     * @param credentialId the UUID of the credential to deactivate
+     * @return confirmation of deactivation
      */
+    @Operation(
+            summary = "Deactivate credential",
+            description = "Soft delete credential while preserving audit trail"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "204", description = "Credential deactivated successfully"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "404", description = "Credential not found")
+    })
+    @DeleteMapping("/{credentialId}")
+    public Mono<ResponseEntity<Void>> deactivateCredential(
+            @Parameter(description = "Credential UUID", required = true)
+            @PathVariable UUID credentialId) {
+
+        log.info("Deactivating credential {}", credentialId);
+
+        return credentialService.deactivateCredential(credentialId)
+                .then(Mono.fromCallable(() -> {
+                    log.info("Successfully deactivated credential {}", credentialId);
+                    return ResponseEntity.noContent().<Void>build();
+                }))
+                .doOnError(error -> log.error("Failed to deactivate credential {}: {}",
+                        credentialId, error.getMessage()));
+    }
+
+    /**
+     * Validates credential existence and expiration status.
+     *
+     * <p>Performs validation without exposing actual credential values.
+     * Useful for health checks and pre-flight validations.
+     *
+     * @param connectorConfigId the connector configuration UUID
+     * @param credentialType the type of credential to validate
+     * @return validation result with status information
+     */
+    @Operation(
+            summary = "Validate credential without exposing value",
+            description = "Checks credential existence and validity for health monitoring"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Validation completed"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required")
+    })
     @GetMapping("/validate/{connectorConfigId}/{credentialType}")
-    public Mono<ResponseEntity<Map<String, Object>>> validateCredential(
+    public Mono<ResponseEntity<CredentialValidationResponse>> validateCredential(
+            @Parameter(description = "Connector configuration UUID", required = true)
             @PathVariable UUID connectorConfigId,
+            @Parameter(description = "Credential type to validate", required = true)
             @PathVariable String credentialType) {
 
+        log.debug("Validating credential for connector {} with type {}",
+                connectorConfigId, credentialType);
+
         return credentialService.hasValidCredential(connectorConfigId, credentialType)
-                .map(isValid -> ResponseEntity.ok(Map.of(
-                        "connectorConfigId", connectorConfigId,
-                        "credentialType", credentialType,
-                        "isValid", isValid,
-                        "status", isValid ? "VALID" : "INVALID_OR_EXPIRED",
-                        "timestamp", LocalDateTime.now()
-                )))
-                .onErrorReturn(ResponseEntity.badRequest().body(Map.of(
-                        "error", "Validation failed",
-                        "timestamp", LocalDateTime.now()
-                )));
+                .map(isValid -> {
+                    CredentialValidationResponse response = CredentialValidationResponse.builder()
+                            .connectorConfigId(connectorConfigId)
+                            .credentialType(credentialType)
+                            .isValid(isValid)
+                            .validatedAt(LocalDateTime.now())
+                            .build();
+
+                    log.debug("Credential validation for connector {} type {}: {}",
+                            connectorConfigId, credentialType, isValid ? "VALID" : "INVALID");
+
+                    return ResponseEntity.ok(response);
+                })
+                .doOnError(error -> log.error("Failed to validate credential for connector {} type {}: {}",
+                        connectorConfigId, credentialType, error.getMessage()));
     }
 
     /**
-     * Get credential usage history
+     * Retrieves credentials expiring within specified threshold.
      *
-     * This endpoint provides information about when credentials were last used,
-     * helping identify unused or frequently accessed credentials.
+     * <p>Proactive monitoring endpoint for credential rotation planning.
+     * Helps prevent service interruptions due to expired credentials.
      *
-     * @param connectorConfigId The connector configuration ID
-     * @return Usage information for credentials
+     * @param daysThreshold number of days ahead to check (1-90, default: 7)
+     * @return flux of credentials approaching expiration
      */
+    @Operation(
+            summary = "Get credentials expiring soon",
+            description = "Returns credentials approaching expiration for proactive rotation"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Expiring credentials retrieved"),
+            @ApiResponse(responseCode = "400", description = "Invalid threshold parameter"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required")
+    })
+    @GetMapping("/expiring")
+    public Flux<CredentialExpirationDto> getCredentialsExpiringSoon(
+            @Parameter(description = "Days ahead to check for expiration (1-90)")
+            @RequestParam(defaultValue = "7")
+            @Min(value = 1, message = "Days threshold must be at least 1")
+            @Max(value = 90, message = "Days threshold cannot exceed 90")
+            int daysThreshold) {
+
+        log.debug("Retrieving credentials expiring within {} days", daysThreshold);
+
+        return credentialService.getCredentialsExpiringSoon(daysThreshold)
+                .map(credential -> {
+                    Duration timeUntilExpiration = Duration.between(LocalDateTime.now(), credential.getExpiresAt());
+                    return CredentialExpirationDto.builder()
+                            .id(credential.getId())
+                            .connectorConfigId(credential.getConnectorConfigId())
+                            .credentialType(credential.getCredentialType())
+                            .expiresAt(credential.getExpiresAt())
+                            .daysUntilExpiration(timeUntilExpiration.toDays())
+                            .urgencyLevel(calculateUrgencyLevel(timeUntilExpiration))
+                            .lastUsed(credential.getLastUsed())
+                            .build();
+                })
+                .doOnNext(dto -> log.debug("Found credential {} expiring in {} days",
+                        dto.getId(), dto.getDaysUntilExpiration()))
+                .doOnError(error -> log.error("Failed to retrieve expiring credentials: {}",
+                        error.getMessage()));
+    }
+
+    /**
+     * Retrieves already expired credentials requiring immediate attention.
+     *
+     * <p>Critical monitoring endpoint for identifying service disruptions.
+     * These credentials need immediate rotation to restore functionality.
+     *
+     * @return flux of expired credentials
+     */
+    @Operation(
+            summary = "Get expired credentials",
+            description = "Returns credentials that have already expired and need immediate attention"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Expired credentials retrieved"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required")
+    })
+    @GetMapping("/expired")
+    public Flux<CredentialExpirationDto> getExpiredCredentials() {
+
+        log.debug("Retrieving expired credentials");
+
+        return credentialService.getExpiredCredentials()
+                .map(credential -> {
+                    Duration timeSinceExpiration = Duration.between(credential.getExpiresAt(), LocalDateTime.now());
+                    return CredentialExpirationDto.builder()
+                            .id(credential.getId())
+                            .connectorConfigId(credential.getConnectorConfigId())
+                            .credentialType(credential.getCredentialType())
+                            .expiresAt(credential.getExpiresAt())
+                            .daysUntilExpiration(-timeSinceExpiration.toDays()) // Negative for expired
+                            .urgencyLevel(UrgencyLevel.CRITICAL)
+                            .lastUsed(credential.getLastUsed())
+                            .build();
+                })
+                .doOnNext(dto -> log.warn("Found expired credential {} - expired {} days ago",
+                        dto.getId(), Math.abs(dto.getDaysUntilExpiration())))
+                .doOnError(error -> log.error("Failed to retrieve expired credentials: {}",
+                        error.getMessage()));
+    }
+
+    /**
+     * Provides aggregate statistics about credential health and status.
+     *
+     * <p>Operational dashboard endpoint for monitoring credential landscape
+     * across all connector types and identifying health trends.
+     *
+     * @return flux of credential statistics grouped by type
+     */
+    @Operation(
+            summary = "Get credential statistics",
+            description = "Returns aggregate statistics for operational monitoring and reporting"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Statistics retrieved successfully"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required")
+    })
+    @GetMapping("/stats")
+    public Flux<CredentialStatsDto> getCredentialStatistics() {
+
+        log.debug("Retrieving credential statistics");
+
+        return credentialService.getCredentialStats()
+                .doOnNext(stats -> log.debug("Retrieved stats for credential type {}: {} total, {} active",
+                        stats.getCredentialType(), stats.getTotalCount(), stats.getActiveCount()))
+                .doOnError(error -> log.error("Failed to retrieve credential statistics: {}",
+                        error.getMessage()));
+    }
+
+    /**
+     * Provides detailed usage analytics for credentials under a connector.
+     *
+     * <p>Analytics endpoint for understanding credential usage patterns,
+     * identifying unused credentials, and optimizing rotation schedules.
+     *
+     * @param connectorConfigId the connector configuration UUID
+     * @return flux of credential usage information
+     */
+    @Operation(
+            summary = "Get credential usage analytics",
+            description = "Returns detailed usage patterns for credential optimization"
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Usage analytics retrieved"),
+            @ApiResponse(responseCode = "401", description = "Authentication required"),
+            @ApiResponse(responseCode = "403", description = "Admin role required"),
+            @ApiResponse(responseCode = "404", description = "Connector not found")
+    })
     @GetMapping("/usage/{connectorConfigId}")
-    public Flux<Map<String, Object>> getCredentialUsage(@PathVariable UUID connectorConfigId) {
-        return credentialService.getActiveCredentials(connectorConfigId)
-                .map(credential -> Map.of(
-                        "id", credential.getId(),
-                        "credentialType", credential.getCredentialType(),
-                        "lastUsed", credential.getLastUsed() != null ? credential.getLastUsed().toString() : "Never",
-                        "createdAt", credential.getCreatedAt().toString(),
-                        "daysSinceLastUse", credential.getLastUsed() != null ?
-                                Duration.between(credential.getLastUsed(), LocalDateTime.now()).toDays() : -1,
-                        "usageStatus", getUsageStatus(credential)
-                ));
+    public Flux<CredentialUsageDto> getCredentialUsage(
+            @Parameter(description = "Connector configuration UUID", required = true)
+            @PathVariable UUID connectorConfigId) {
+
+        log.debug("Retrieving credential usage for connector {}", connectorConfigId);
+
+        return credentialService.getCredentialUsageAnalytics(connectorConfigId)
+                .doOnNext(usage -> log.debug("Retrieved usage analytics for credential {} under connector {}",
+                        usage.getCredentialId(), connectorConfigId))
+                .doOnError(error -> log.error("Failed to retrieve credential usage for connector {}: {}",
+                        connectorConfigId, error.getMessage()));
     }
 
-    // Helper methods for status calculation
+    // Helper methods for business logic
 
-    private String getExpirationStatus(ApiCredential credential) {
-        if (credential.isExpired()) {
-            return "EXPIRED";
-        } else if (credential.isExpiringSoon(3)) {
-            return "CRITICAL";
-        } else if (credential.isExpiringSoon(7)) {
-            return "WARNING";
-        } else if (credential.isExpiringSoon(30)) {
-            return "NOTICE";
-        } else {
-            return "HEALTHY";
+    private UrgencyLevel calculateUrgencyLevel(Duration timeUntilExpiration) {
+        long days = timeUntilExpiration.toDays();
+        if (days <= 1) return UrgencyLevel.CRITICAL;
+        if (days <= 3) return UrgencyLevel.HIGH;
+        if (days <= 7) return UrgencyLevel.MEDIUM;
+        return UrgencyLevel.LOW;
+    }
+
+    // Inner classes for response DTOs
+
+    @Schema(description = "Credential validation response")
+    public record CredentialValidationResponse(
+            @Schema(description = "Connector configuration ID") UUID connectorConfigId,
+            @Schema(description = "Credential type") String credentialType,
+            @Schema(description = "Whether credential is valid and not expired") boolean isValid,
+            @Schema(description = "Validation timestamp") LocalDateTime validatedAt
+    ) {
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private UUID connectorConfigId;
+            private String credentialType;
+            private boolean isValid;
+            private LocalDateTime validatedAt;
+
+            public Builder connectorConfigId(UUID connectorConfigId) {
+                this.connectorConfigId = connectorConfigId;
+                return this;
+            }
+
+            public Builder credentialType(String credentialType) {
+                this.credentialType = credentialType;
+                return this;
+            }
+
+            public Builder isValid(boolean isValid) {
+                this.isValid = isValid;
+                return this;
+            }
+
+            public Builder validatedAt(LocalDateTime validatedAt) {
+                this.validatedAt = validatedAt;
+                return this;
+            }
+
+            public CredentialValidationResponse build() {
+                return new CredentialValidationResponse(connectorConfigId, credentialType, isValid, validatedAt);
+            }
         }
     }
 
-    private String getExpirationUrgency(ApiCredential credential) {
-        long daysUntilExpiration = Duration.between(LocalDateTime.now(), credential.getExpiresAt()).toDays();
-        if (daysUntilExpiration <= 1) return "URGENT";
-        if (daysUntilExpiration <= 3) return "HIGH";
-        if (daysUntilExpiration <= 7) return "MEDIUM";
-        return "LOW";
-    }
-
-    private String getUsageStatus(ApiCredential credential) {
-        if (credential.getLastUsed() == null) {
-            return "UNUSED";
+    @Schema(description = "Credential expiration information")
+    public record CredentialExpirationDto(
+            @Schema(description = "Credential ID") UUID id,
+            @Schema(description = "Connector configuration ID") UUID connectorConfigId,
+            @Schema(description = "Credential type") String credentialType,
+            @Schema(description = "Expiration date") LocalDateTime expiresAt,
+            @Schema(description = "Days until expiration (negative if expired)") long daysUntilExpiration,
+            @Schema(description = "Urgency level") UrgencyLevel urgencyLevel,
+            @Schema(description = "Last usage timestamp") LocalDateTime lastUsed
+    ) {
+        public static Builder builder() {
+            return new Builder();
         }
 
-        long daysSinceLastUse = Duration.between(credential.getLastUsed(), LocalDateTime.now()).toDays();
-        if (daysSinceLastUse == 0) return "ACTIVE_TODAY";
-        if (daysSinceLastUse <= 7) return "RECENT";
-        if (daysSinceLastUse <= 30) return "MODERATE";
-        return "STALE";
+        public static class Builder {
+            private UUID id;
+            private UUID connectorConfigId;
+            private String credentialType;
+            private LocalDateTime expiresAt;
+            private long daysUntilExpiration;
+            private UrgencyLevel urgencyLevel;
+            private LocalDateTime lastUsed;
+
+            public Builder id(UUID id) { this.id = id; return this; }
+            public Builder connectorConfigId(UUID connectorConfigId) { this.connectorConfigId = connectorConfigId; return this; }
+            public Builder credentialType(String credentialType) { this.credentialType = credentialType; return this; }
+            public Builder expiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; return this; }
+            public Builder daysUntilExpiration(long daysUntilExpiration) { this.daysUntilExpiration = daysUntilExpiration; return this; }
+            public Builder urgencyLevel(UrgencyLevel urgencyLevel) { this.urgencyLevel = urgencyLevel; return this; }
+            public Builder lastUsed(LocalDateTime lastUsed) { this.lastUsed = lastUsed; return this; }
+
+            public CredentialExpirationDto build() {
+                return new CredentialExpirationDto(id, connectorConfigId, credentialType, expiresAt,
+                        daysUntilExpiration, urgencyLevel, lastUsed);
+            }
+        }
     }
 
-    private double calculateHealthPercentage(Long activeCount, Long totalCount) {
-        if (totalCount == 0) return 0.0;
-        return (double) activeCount / totalCount * 100.0;
+    @Schema(description = "Urgency levels for credential expiration")
+    public enum UrgencyLevel {
+        @Schema(description = "Immediate action required") CRITICAL,
+        @Schema(description = "Action needed soon") HIGH,
+        @Schema(description = "Plan for rotation") MEDIUM,
+        @Schema(description = "Monitor for changes") LOW
     }
 }

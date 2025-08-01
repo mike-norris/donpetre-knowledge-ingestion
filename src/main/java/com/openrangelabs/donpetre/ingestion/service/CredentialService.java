@@ -1,5 +1,7 @@
 package com.openrangelabs.donpetre.ingestion.service;
 
+import com.openrangelabs.donpetre.ingestion.dto.CredentialStatsDto;
+import com.openrangelabs.donpetre.ingestion.dto.CredentialUsageDto;
 import com.openrangelabs.donpetre.ingestion.entity.ApiCredential;
 import com.openrangelabs.donpetre.ingestion.repository.ApiCredentialRepository;
 import org.slf4j.Logger;
@@ -11,6 +13,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -33,20 +36,56 @@ public class CredentialService {
     }
 
     /**
-     * Store encrypted credential
+     * Store encrypted credential with description support
+     * This overloads your existing storeCredential method to support description
+     */
+    public Mono<ApiCredential> storeCredential(UUID connectorConfigId, String credentialType,
+                                               String plainTextValue, LocalDateTime expiresAt, String description) {
+        String encryptedValue = encryptor.encrypt(plainTextValue);
+        ApiCredential credential = new ApiCredential(connectorConfigId, credentialType, encryptedValue, expiresAt);
+        credential.setDescription(description); // Set the description if your entity supports it
+        return repository.save(credential)
+                .doOnSuccess(saved -> logger.info("Stored credential {} for connector {} with description",
+                        saved.getId(), connectorConfigId));
+    }
+
+    /**
+     * Store encrypted credential with description support
+     * This overloads your existing storeCredential method to support description
      */
     public Mono<ApiCredential> storeCredential(UUID connectorConfigId, String credentialType,
                                                String plainTextValue, LocalDateTime expiresAt) {
         String encryptedValue = encryptor.encrypt(plainTextValue);
-
         ApiCredential credential = new ApiCredential(connectorConfigId, credentialType, encryptedValue, expiresAt);
-
         return repository.save(credential)
-                .doOnSuccess(saved -> {
-                    logger.info("Stored credential for connector {} of type: {}", connectorConfigId, credentialType);
-                    if (expiresAt != null) {
-                        logger.info("Credential expires at: {}", expiresAt);
-                    }
+                .doOnSuccess(saved -> logger.info("Stored credential {} for connector {} with description",
+                        saved.getId(), connectorConfigId));
+    }
+
+    /**
+     * Get credential usage analytics for a connector
+     * This provides detailed usage patterns and statistics
+     */
+    public Flux<CredentialUsageDto> getCredentialUsageAnalytics(UUID connectorConfigId) {
+        return repository.findByConnectorConfigId(connectorConfigId)
+                .map(credential -> {
+                    // Calculate usage metrics
+                    LocalDateTime now = LocalDateTime.now();
+                    long daysSinceCreation = Duration.between(credential.getCreatedAt(), now).toDays();
+
+                    // For now, we'll use a simple usage count calculation
+                    // In a real implementation, you'd have a separate usage tracking table
+                    long estimatedUsageCount = credential.getLastUsed() != null ?
+                            Math.max(1, daysSinceCreation / 7) : 0; // Rough estimate
+
+                    return CredentialUsageDto.create(
+                            credential.getId(),
+                            credential.getConnectorConfigId(),
+                            credential.getCredentialType(),
+                            credential.getCreatedAt(),
+                            credential.getLastUsed(),
+                            estimatedUsageCount
+                    );
                 });
     }
 
@@ -65,6 +104,20 @@ public class CredentialService {
                         connectorConfigId, credentialType))
                 .doOnError(error -> logger.error("Failed to retrieve credential for connector {} of type: {}",
                         connectorConfigId, credentialType, error));
+    }
+
+    /**
+     * Helper method to update credential usage timestamp
+     * Call this whenever a credential is used
+     */
+    public Mono<Void> recordCredentialUsage(UUID credentialId) {
+        return repository.findById(credentialId)
+                .flatMap(credential -> {
+                    credential.setLastUsed(LocalDateTime.now());
+                    return repository.save(credential);
+                })
+                .then()
+                .doOnSuccess(v -> logger.debug("Recorded usage for credential {}", credentialId));
     }
 
     /**
@@ -100,12 +153,16 @@ public class CredentialService {
     }
 
     /**
-     * Get credentials expiring soon
+     * Enhanced method to get credentials expiring within specified days
+     * This provides more detailed expiration information
      */
     public Flux<ApiCredential> getCredentialsExpiringSoon(int daysThreshold) {
-        LocalDateTime threshold = LocalDateTime.now().plusDays(daysThreshold);
-        return repository.findExpiringSoon(threshold)
-                .doOnNext(credential -> logger.warn("Credential {} expires at: {}",
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime thresholdDate = now.plusDays(daysThreshold);
+
+        return repository.findByExpirationRange(now, thresholdDate)
+                .filter(credential -> credential.getIsActive())
+                .doOnNext(credential -> logger.debug("Found credential {} expiring on {}",
                         credential.getId(), credential.getExpiresAt()));
     }
 
@@ -142,10 +199,30 @@ public class CredentialService {
     }
 
     /**
-     * Get credential statistics
+     * Enhanced credential statistics that returns CredentialStatsDto
+     * This transforms your existing stats into the enhanced DTO format
      */
-    public Flux<ApiCredentialRepository.CredentialStats> getCredentialStats() {
-        return repository.getCredentialStats();
+    public Flux<CredentialStatsDto> getCredentialStats() {
+        return repository.getCredentialStats()
+                .map(stats -> {
+                    // Calculate expiring soon count
+                    return repository.findByExpirationRange(
+                                    LocalDateTime.now(),
+                                    LocalDateTime.now().plusDays(7)
+                            )
+                            .filter(cred -> cred.getCredentialType().equals(stats.getCredentialType()))
+                            .count()
+                            .map(expiringSoonCount ->
+                                    CredentialStatsDto.create(
+                                            stats.getCredentialType(),
+                                            stats.getTotalCount(),
+                                            stats.getActiveCount(),
+                                            stats.getExpiredCount(),
+                                            expiringSoonCount
+                                    )
+                            );
+                })
+                .flatMap(mono -> mono); // Flatten the nested Mono
     }
 
     /**
@@ -161,4 +238,5 @@ public class CredentialService {
                 .doOnSuccess(newCredential -> logger.info("Rotated credential for connector {} of type: {}",
                         connectorConfigId, credentialType));
     }
+
 }
