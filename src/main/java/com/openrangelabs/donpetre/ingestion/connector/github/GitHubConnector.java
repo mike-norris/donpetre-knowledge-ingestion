@@ -14,9 +14,11 @@ import reactor.core.publisher.Mono;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * GitHub connector implementation
@@ -27,10 +29,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GitHubConnector extends AbstractDataConnector {
 
     private static final String CONNECTOR_TYPE = "github";
-
-    // Rate limiting constants
-    private static final int MAX_RETRIES = 3;
-    private static final long RETRY_DELAY_MS = 1000;
 
     @Override
     public String getConnectorType() {
@@ -69,54 +67,6 @@ public class GitHubConnector extends AbstractDataConnector {
                 });
     }
 
-    private void handleRateLimit(GitHub github) throws IOException, InterruptedException {
-        GHRateLimit rateLimit = github.getRateLimit();
-        if (rateLimit.getRemaining() < 10) {
-            long sleepTime = rateLimit.getResetDate().getTime() - System.currentTimeMillis();
-            if (sleepTime > 0) {
-                log.info("Rate limit nearly exceeded. Sleeping for {} ms", sleepTime);
-                Thread.sleep(sleepTime);
-            }
-        }
-    }
-
-    private Flux<KnowledgeItem> fetchCommitsPaginated(GHRepository repo, SyncContext context) {
-        return Flux.create(sink -> {
-            try {
-                PagedIterable<GHCommit> commits = repo.listCommits();
-                if (context.getLastSyncTime() != null) {
-                    Date since = Date.from(context.getLastSyncTime().atZone(ZoneId.systemDefault()).toInstant());
-                    commits = repo.queryCommits().since(since).list();
-                }
-
-                for (GHCommit commit : commits.withPageSize(100)) {
-                    try {
-                        KnowledgeItem item = createKnowledgeItemFromCommit(repo, commit);
-                        sink.next(item);
-                    } catch (Exception e) {
-                        log.warn("Failed to process commit {}: {}", commit.getSHA1(), e.getMessage());
-                    }
-                }
-                sink.complete();
-            } catch (Exception e) {
-                sink.error(e);
-            }
-        });
-    }
-
-    private void validateRepositoryAccess(GHRepository repo) throws IOException {
-        if (repo == null) {
-            throw new IllegalArgumentException("Repository cannot be null");
-        }
-
-        // Check if we have read access
-        try {
-            repo.getDescription(); // Simple call to test access
-        } catch (GHFileNotFoundException e) {
-            throw new IllegalArgumentException("Repository not found or no access: " + repo.getFullName());
-        }
-    }
-
     @Override
     protected Mono<SyncResult> doFullSync(ConnectorConfig config) {
         LocalDateTime startTime = LocalDateTime.now();
@@ -125,10 +75,7 @@ public class GitHubConnector extends AbstractDataConnector {
 
         return fetchData(config, SyncContext.forFullSync())
                 .doOnNext(item -> processedCount.incrementAndGet())
-                .doOnError(error -> {
-                    failedCount.incrementAndGet();
-                    log.warn("Failed to process GitHub item: {}", error.getMessage());
-                })
+                .doOnError(error -> failedCount.incrementAndGet())
                 .onErrorContinue((error, item) -> {
                     log.warn("Failed to process GitHub item: {}", error.getMessage());
                 })
@@ -153,7 +100,7 @@ public class GitHubConnector extends AbstractDataConnector {
                 since = Date.from(LocalDateTime.parse(lastSyncCursor)
                         .atZone(ZoneId.systemDefault()).toInstant());
             } catch (Exception e) {
-                logger.warn("Invalid sync cursor, performing full sync: {}", lastSyncCursor);
+                log.warn("Invalid sync cursor, performing full sync: {}", lastSyncCursor);
             }
         }
 
@@ -164,7 +111,7 @@ public class GitHubConnector extends AbstractDataConnector {
                 .doOnNext(item -> processedCount.incrementAndGet())
                 .doOnError(error -> failedCount.incrementAndGet())
                 .onErrorContinue((error, item) -> {
-                    logger.warn("Failed to process GitHub item: {}", error.getMessage());
+                    log.warn("Failed to process GitHub item: {}", error.getMessage());
                 })
                 .then(Mono.fromCallable(() ->
                         SyncResult.builder(CONNECTOR_TYPE, SyncType.INCREMENTAL)
@@ -185,7 +132,7 @@ public class GitHubConnector extends AbstractDataConnector {
                         github.checkApiUrlValidity();
                         return true;
                     } catch (Exception e) {
-                        logger.error("GitHub connection test failed", e);
+                        log.error("GitHub connection test failed", e);
                         return false;
                     }
                 }));
@@ -207,7 +154,7 @@ public class GitHubConnector extends AbstractDataConnector {
                                 "core"
                         );
                     } catch (Exception e) {
-                        logger.error("Failed to get GitHub rate limit status", e);
+                        log.error("Failed to get GitHub rate limit status", e);
                         return new RateLimitStatus(0, 0, LocalDateTime.now(), "unknown");
                     }
                 }));
@@ -248,16 +195,13 @@ public class GitHubConnector extends AbstractDataConnector {
 
     private Flux<KnowledgeItem> fetchFromOrganization(GHOrganization org, JsonNode config, SyncContext context) {
         return Flux.fromIterable(() -> {
-                    try {
-                        return org.listRepositories().iterator();
-                    } catch (IOException e) {
-                        throw new RuntimeException("Failed to list repositories", e);
-                    }
+                    // No IOException thrown here - just creates an iterator
+                    return org.listRepositories().iterator();
                 })
                 .filter(repo -> shouldIncludeRepository(repo, config))
                 .flatMap(repo -> fetchFromRepository(repo, config, context))
                 .onErrorContinue((error, repo) -> {
-                    logger.warn("Failed to process repository {}: {}", repo, error.getMessage());
+                    log.warn("Failed to process repository {}: {}", repo, error.getMessage());
                 });
     }
 
@@ -270,7 +214,7 @@ public class GitHubConnector extends AbstractDataConnector {
                         GHRepository repo = github.getRepository(repoName);
                         return fetchFromRepository(repo, config, context);
                     } catch (IOException e) {
-                        logger.warn("Failed to get repository {}: {}", repoName, e.getMessage());
+                        log.warn("Failed to get repository {}: {}", repoName, e.getMessage());
                         return Flux.empty();
                     }
                 });
@@ -290,20 +234,16 @@ public class GitHubConnector extends AbstractDataConnector {
 
     private Flux<KnowledgeItem> fetchCommits(GHRepository repo, SyncContext context) {
         return Flux.fromIterable(() -> {
-                    try {
-                        PagedIterable<GHCommit> commits;
-                        if (context.getLastSyncTime() != null) {
-                            Date since = Date.from(context.getLastSyncTime().atZone(ZoneId.systemDefault()).toInstant());
-                            // Use queryCommits() for proper since filtering
-                            commits = repo.queryCommits().since(since).list();
-                        } else {
-                            commits = repo.listCommits();
-                        }
-                        return commits.iterator();
-                    } catch (IOException e) {
-                        log.error("Failed to list commits for repository {}: {}", repo.getFullName(), e.getMessage());
-                        throw new RuntimeException("Failed to list commits", e);
+                    // No IOException thrown here - just creates an iterator
+                    PagedIterable<GHCommit> commits;
+                    if (context.getLastSyncTime() != null) {
+                        Date since = Date.from(context.getLastSyncTime().atZone(ZoneId.systemDefault()).toInstant());
+                        // Fixed: Use queryCommits() instead of listCommits().since()
+                        commits = repo.queryCommits().since(since).list();
+                    } else {
+                        commits = repo.listCommits();
                     }
+                    return commits.iterator();
                 })
                 .map(commit -> createKnowledgeItemFromCommit(repo, commit))
                 .onErrorContinue((error, commit) -> {
@@ -314,7 +254,8 @@ public class GitHubConnector extends AbstractDataConnector {
     private Flux<KnowledgeItem> fetchIssues(GHRepository repo, SyncContext context) {
         return Flux.fromIterable(() -> {
                     try {
-                        PagedIterable<GHIssue> issues = repo.getIssues(GHIssueState.ALL);
+                        // This DOES throw IOException according to the method signature
+                        List<GHIssue> issues = repo.getIssues(GHIssueState.ALL);
                         return issues.iterator();
                     } catch (IOException e) {
                         throw new RuntimeException("Failed to list issues", e);
@@ -322,19 +263,26 @@ public class GitHubConnector extends AbstractDataConnector {
                 })
                 .filter(issue -> {
                     if (context.getLastSyncTime() == null) return true;
-                    return issue.getUpdatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
-                            .isAfter(context.getLastSyncTime());
+                    try {
+                        // issue.getUpdatedAt() can also throw IOException
+                        return issue.getUpdatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
+                                .isAfter(context.getLastSyncTime());
+                    } catch (IOException e) {
+                        log.warn("Failed to get updated date for issue {}: {}", issue, e.getMessage());
+                        return true; // Include the issue if we can't determine the date
+                    }
                 })
                 .map(issue -> createKnowledgeItemFromIssue(repo, issue))
                 .onErrorContinue((error, issue) -> {
-                    logger.warn("Failed to process issue {}: {}", issue, error.getMessage());
+                    log.warn("Failed to process issue {}: {}", issue, error.getMessage());
                 });
     }
 
     private Flux<KnowledgeItem> fetchPullRequests(GHRepository repo, SyncContext context) {
         return Flux.fromIterable(() -> {
                     try {
-                        PagedIterable<GHPullRequest> pullRequests = repo.getPullRequests(GHIssueState.ALL);
+                        // This likely also throws IOException - need to check method signature
+                        List<GHPullRequest> pullRequests = repo.getPullRequests(GHIssueState.ALL);
                         return pullRequests.iterator();
                     } catch (IOException e) {
                         throw new RuntimeException("Failed to list pull requests", e);
@@ -342,12 +290,18 @@ public class GitHubConnector extends AbstractDataConnector {
                 })
                 .filter(pr -> {
                     if (context.getLastSyncTime() == null) return true;
-                    return pr.getUpdatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
-                            .isAfter(context.getLastSyncTime());
+                    try {
+                        // pr.getUpdatedAt() can also throw IOException
+                        return pr.getUpdatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
+                                .isAfter(context.getLastSyncTime());
+                    } catch (IOException e) {
+                        log.warn("Failed to get updated date for PR {}: {}", pr, e.getMessage());
+                        return true; // Include the PR if we can't determine the date
+                    }
                 })
                 .map(pr -> createKnowledgeItemFromPullRequest(repo, pr))
                 .onErrorContinue((error, pr) -> {
-                    logger.warn("Failed to process pull request {}: {}", pr, error.getMessage());
+                    log.warn("Failed to process pull request {}: {}", pr, error.getMessage());
                 });
     }
 
@@ -360,10 +314,10 @@ public class GitHubConnector extends AbstractDataConnector {
 
                         // Note: GitHub API doesn't provide direct wiki access
                         // This would need to be implemented using Git API or separate wiki repository
-                        logger.debug("Wiki fetching not implemented for repository: {}", repo.getFullName());
+                        log.debug("Wiki fetching not implemented for repository: {}", repo.getFullName());
                         return Flux.<KnowledgeItem>empty();
-                    } catch (IOException e) {
-                        logger.warn("Failed to check wiki for repository {}: {}", repo.getFullName(), e.getMessage());
+                    } catch (Exception e) {
+                        log.warn("Failed to check wiki for repository {}: {}", repo.getFullName(), e.getMessage());
                         return Flux.<KnowledgeItem>empty();
                     }
                 })
@@ -376,7 +330,7 @@ public class GitHubConnector extends AbstractDataConnector {
                         GHContent readme = repo.getReadme();
                         return createKnowledgeItemFromReadme(repo, readme);
                     } catch (IOException e) {
-                        logger.debug("No README found for repository: {}", repo.getFullName());
+                        log.debug("No README found for repository: {}", repo.getFullName());
                         return null;
                     }
                 })
@@ -386,8 +340,12 @@ public class GitHubConnector extends AbstractDataConnector {
 
     private KnowledgeItem createKnowledgeItemFromCommit(GHRepository repo, GHCommit commit) {
         try {
+            // Network calls that throw IOException - get them all first
             GHCommit.ShortInfo info = commit.getCommitShortInfo();
+            int filesChanged = commit.getFiles().size();
+            String htmlUrl = commit.getHtmlUrl().toString();
 
+            // Safe property access
             return KnowledgeItem.builder()
                     .title("Commit: " + commit.getSHA1().substring(0, 8) + " - " + info.getMessage())
                     .content(info.getMessage())
@@ -397,8 +355,8 @@ public class GitHubConnector extends AbstractDataConnector {
                     .createdAt(info.getCommitDate().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("sha", commit.getSHA1())
-                    .addMetadata("url", commit.getHtmlUrl().toString())
-                    .addMetadata("files_changed", commit.getFiles().size())
+                    .addMetadata("url", htmlUrl)
+                    .addMetadata("files_changed", filesChanged)
                     .build();
         } catch (IOException e) {
             throw new RuntimeException("Failed to create knowledge item from commit", e);
@@ -407,20 +365,36 @@ public class GitHubConnector extends AbstractDataConnector {
 
     private KnowledgeItem createKnowledgeItemFromIssue(GHRepository repo, GHIssue issue) {
         try {
+            // Network calls that throw IOException - get them all first
+            List<GHIssueComment> comments = issue.getComments();
+            Date createdAt = issue.getCreatedAt();
+            GHUser user = issue.getUser();
+            String htmlUrl = issue.getHtmlUrl().toString();
+            Collection<GHLabel> labels = issue.getLabels();
+            int commentsCount = issue.getCommentsCount();
+
+            // Safe property access
             StringBuilder content = new StringBuilder();
             content.append(issue.getBody() != null ? issue.getBody() : "");
 
-            List<GHIssueComment> comments = issue.getComments();
+            // Add comments with comprehensive null safety
             if (comments != null) {
                 for (GHIssueComment comment : comments) {
-                    if (comment.getUser() != null && comment.getBody() != null) {
-                        content.append("\n\n--- Comment by ").append(comment.getUser().getLogin())
-                                .append(" ---\n").append(comment.getBody());
+                    try {
+                        GHUser commentUser = comment.getUser();
+                        String commentBody = comment.getBody();
+                        if (commentUser != null && commentBody != null) {
+                            content.append("\n\n--- Comment by ").append(commentUser.getLogin())
+                                    .append(" ---\n").append(commentBody);
+                        }
+                    } catch (IOException e) {
+                        log.warn("Failed to get comment details: {}", e.getMessage());
                     }
                 }
             }
 
-            List<String> labelNames = issue.getLabels().stream()
+            // Process labels safely - getName() doesn't throw IOException
+            List<String> labelNames = labels.stream()
                     .map(GHLabel::getName)
                     .collect(Collectors.toList());
 
@@ -429,30 +403,50 @@ public class GitHubConnector extends AbstractDataConnector {
                     .content(content.toString())
                     .sourceType("github_issue")
                     .sourceReference(repo.getFullName() + "/issues/" + issue.getNumber())
-                    .author(issue.getUser() != null ? issue.getUser().getLogin() : "Unknown")
-                    .createdAt(issue.getCreatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
+                    .author(user != null ? user.getLogin() : "Unknown")
+                    .createdAt(createdAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("issue_number", issue.getNumber())
                     .addMetadata("state", issue.getState().toString())
-                    .addMetadata("url", issue.getHtmlUrl().toString())
+                    .addMetadata("url", htmlUrl)
                     .addMetadata("labels", labelNames)
-                    .addMetadata("comments_count", issue.getCommentsCount())
+                    .addMetadata("comments_count", commentsCount)
                     .build();
         } catch (IOException e) {
-            log.error("Failed to create knowledge item from issue {}: {}", issue.getNumber(), e.getMessage());
             throw new RuntimeException("Failed to create knowledge item from issue", e);
         }
     }
 
     private KnowledgeItem createKnowledgeItemFromPullRequest(GHRepository repo, GHPullRequest pr) {
         try {
+            // Network calls that throw IOException - get them all first
+            PagedIterable<GHPullRequestReviewComment> reviewComments = pr.listReviewComments();
+            Boolean mergeable = pr.getMergeable();
+            int additions = pr.getAdditions();
+            int deletions = pr.getDeletions();
+            int changedFiles = pr.getChangedFiles();
+            Date createdAt = pr.getCreatedAt();
+            GHUser user = pr.getUser();
+            String htmlUrl = pr.getHtmlUrl().toString();
+
+            // Safe property access
             StringBuilder content = new StringBuilder();
             content.append(pr.getBody() != null ? pr.getBody() : "");
 
-            // Add review comments
-            for (GHPullRequestReviewComment comment : pr.listReviewComments()) {
-                content.append("\n\n--- Review Comment by ").append(comment.getUser().getLogin())
-                        .append(" ---\n").append(comment.getBody());
+            // Add review comments with comprehensive null safety
+            if (reviewComments != null) {
+                for (GHPullRequestReviewComment comment : reviewComments) {
+                    try {
+                        GHUser commentUser = comment.getUser();
+                        String commentBody = comment.getBody();
+                        if (commentUser != null && commentBody != null) {
+                            content.append("\n\n--- Review Comment by ").append(commentUser.getLogin())
+                                    .append(" ---\n").append(commentBody);
+                        }
+                    } catch (IOException e) {
+                        log.warn("Failed to get review comment details: {}", e.getMessage());
+                    }
+                }
             }
 
             return KnowledgeItem.builder()
@@ -460,16 +454,16 @@ public class GitHubConnector extends AbstractDataConnector {
                     .content(content.toString())
                     .sourceType("github_pull_request")
                     .sourceReference(repo.getFullName() + "/pull/" + pr.getNumber())
-                    .author(pr.getUser().getLogin())
-                    .createdAt(pr.getCreatedAt().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
+                    .author(user != null ? user.getLogin() : "Unknown")
+                    .createdAt(createdAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime())
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("pr_number", pr.getNumber())
                     .addMetadata("state", pr.getState().toString())
-                    .addMetadata("url", pr.getHtmlUrl().toString())
-                    .addMetadata("mergeable", pr.getMergeable())
-                    .addMetadata("additions", pr.getAdditions())
-                    .addMetadata("deletions", pr.getDeletions())
-                    .addMetadata("changed_files", pr.getChangedFiles())
+                    .addMetadata("url", htmlUrl)
+                    .addMetadata("mergeable", mergeable)
+                    .addMetadata("additions", additions)
+                    .addMetadata("deletions", deletions)
+                    .addMetadata("changed_files", changedFiles)
                     .build();
         } catch (IOException e) {
             throw new RuntimeException("Failed to create knowledge item from pull request", e);
@@ -478,18 +472,22 @@ public class GitHubConnector extends AbstractDataConnector {
 
     private KnowledgeItem createKnowledgeItemFromReadme(GHRepository repo, GHContent readme) {
         try {
+            // Network calls that throw IOException - get them all first
             String content = readme.getContent();
+            String defaultBranch = repo.getDefaultBranch();
+            String htmlUrl = readme.getHtmlUrl();
 
+            // Safe property access
             return KnowledgeItem.builder()
                     .title("README - " + repo.getFullName())
                     .content(content)
                     .sourceType("github_readme")
-                    .sourceReference(repo.getFullName() + "/blob/" + repo.getDefaultBranch() + "/" + readme.getName())
+                    .sourceReference(repo.getFullName() + "/blob/" + defaultBranch + "/" + readme.getName())
                     .author("Repository")
                     .createdAt(LocalDateTime.now()) // README doesn't have creation date in API
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("file_name", readme.getName())
-                    .addMetadata("url", readme.getHtmlUrl())
+                    .addMetadata("url", htmlUrl)
                     .addMetadata("size", readme.getSize())
                     .build();
         } catch (IOException e) {
@@ -497,23 +495,19 @@ public class GitHubConnector extends AbstractDataConnector {
         }
     }
 
+    // Fixed: Removed unnecessary IOException catch - these are cached properties
     private boolean shouldIncludeRepository(GHRepository repo, JsonNode config) {
-        try {
-            // Check if forks should be included
-            if (repo.isFork() && config.has("include_forks") && !config.get("include_forks").asBoolean()) {
-                return false;
-            }
-
-            // Check if archived repositories should be included
-            if (repo.isArchived() && config.has("include_archived") && !config.get("include_archived").asBoolean()) {
-                return false;
-            }
-
-            return true;
-        } catch (IOException e) {
-            logger.warn("Failed to check repository properties for {}: {}", repo, e.getMessage());
+        // Check if forks should be included
+        if (repo.isFork() && config.has("include_forks") && !config.get("include_forks").asBoolean()) {
             return false;
         }
+
+        // Check if archived repositories should be included
+        if (repo.isArchived() && config.has("include_archived") && !config.get("include_archived").asBoolean()) {
+            return false;
+        }
+
+        return true;
     }
 
     private boolean shouldFetchDataType(JsonNode dataTypes, String dataType) {
