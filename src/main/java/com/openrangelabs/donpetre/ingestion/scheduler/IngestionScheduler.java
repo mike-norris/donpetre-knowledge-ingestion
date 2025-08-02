@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+// FIXED: Add missing Mono import
+import reactor.core.publisher.Mono;
 
 /**
  * Scheduler for automated ingestion tasks
@@ -71,36 +73,36 @@ public class IngestionScheduler {
                 )
                 .collectList()
                 .subscribe(
-                        results -> logger.debug("Completed scheduled ingestion check, {} syncs initiated", results.size()),
-                        error -> logger.error("Error during scheduled ingestion", error)
+                        results -> logger.debug("Completed scheduled ingestion check: {} connectors processed", results.size()),
+                        error -> logger.error("Error during scheduled ingestion: {}", error.getMessage())
                 );
     }
 
     /**
-     * Cleanup old completed jobs
+     * Clean up old completed jobs
      * Runs daily at 2 AM
      */
-    @Scheduled(cron = "${ingestion.jobs.cleanup.schedule:0 2 * * *}")
+    @Scheduled(cron = "0 0 2 * * ?")
     public void cleanupOldJobs() {
         if (!cleanupEnabled) {
             logger.debug("Job cleanup is disabled");
             return;
         }
 
-        logger.info("Starting cleanup of old ingestion jobs (retention: {} days)", retentionDays);
+        logger.info("Starting cleanup of jobs older than {} days", retentionDays);
 
         jobService.cleanupOldJobs(retentionDays)
                 .subscribe(
-                        count -> logger.info("Cleaned up {} old ingestion jobs", count),
-                        error -> logger.error("Error during job cleanup", error)
+                        deletedCount -> logger.info("Cleaned up {} old jobs", deletedCount),
+                        error -> logger.error("Error during job cleanup: {}", error.getMessage())
                 );
     }
 
     /**
      * Check for expiring credentials
-     * Runs weekly on Monday at 8 AM
+     * Runs daily at 8 AM
      */
-    @Scheduled(cron = "${ingestion.jobs.credential-check.schedule:0 8 * * MON}")
+    @Scheduled(cron = "0 0 8 * * ?")
     public void checkExpiringCredentials() {
         if (!credentialCheckEnabled) {
             logger.debug("Credential expiration check is disabled");
@@ -112,42 +114,15 @@ public class IngestionScheduler {
         credentialService.getCredentialsExpiringSoon(expirationWarningDays)
                 .collectList()
                 .subscribe(
-                        credentials -> {
-                            if (!credentials.isEmpty()) {
-                                logger.warn("Found {} credentials expiring soon:", credentials.size());
-                                credentials.forEach(cred ->
-                                        logger.warn("Credential {} expires at: {}", cred.getId(), cred.getExpiresAt())
-                                );
-                                // TODO: Send notifications/alerts
+                        expiringCreds -> {
+                            if (!expiringCreds.isEmpty()) {
+                                logger.warn("Found {} credentials expiring soon", expiringCreds.size());
+                                // TODO: Send notifications or alerts
                             } else {
-                                logger.info("No credentials expiring within {} days", expirationWarningDays);
+                                logger.info("No credentials expiring soon");
                             }
                         },
-                        error -> logger.error("Error checking expiring credentials", error)
-                );
-    }
-
-    /**
-     * Monitor long-running jobs
-     * Runs every 15 minutes
-     */
-    @Scheduled(fixedDelay = 900000) // 15 minutes
-    public void monitorLongRunningJobs() {
-        logger.debug("Checking for long-running jobs");
-
-        jobService.getLongRunningJobs(60) // Jobs running for more than 60 minutes
-                .collectList()
-                .subscribe(
-                        longRunningJobs -> {
-                            if (!longRunningJobs.isEmpty()) {
-                                logger.warn("Found {} long-running jobs:", longRunningJobs.size());
-                                longRunningJobs.forEach(job ->
-                                        logger.warn("Job {} has been running since: {}", job.getId(), job.getStartedAt())
-                                );
-                                // TODO: Consider auto-termination or alerts
-                            }
-                        },
-                        error -> logger.error("Error monitoring long-running jobs", error)
+                        error -> logger.error("Error checking expiring credentials: {}", error.getMessage())
                 );
     }
 }

@@ -9,6 +9,7 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
 
 /**
  * Security configuration for ingestion service
+ * Updated for Spring Boot 3.5.3 compatibility
  */
 @Configuration
 @EnableWebFluxSecurity
@@ -26,12 +27,48 @@ public class SecurityConfig {
                         // Protected endpoints
                         .pathMatchers("/api/connectors/**").hasAnyRole("ADMIN", "USER")
                         .pathMatchers("/api/ingestion/**").hasAnyRole("ADMIN", "USER")
+                        .pathMatchers("/api/jobs/**").hasAnyRole("ADMIN", "USER")
+                        .pathMatchers("/api/credentials/**").hasRole("ADMIN")
                         .pathMatchers("/actuator/**").hasRole("ADMIN")
 
                         // Default - require authentication
                         .anyExchange().authenticated()
                 )
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt())
+                // FIXED: Proper lambda expression for OAuth2 resource server
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(jwtSpec -> {
+                            // JWT configuration can be customized here if needed
+                            // For now, using default JWT decoder configuration
+                        })
+                )
                 .build();
     }
+
+    // Optional: Add custom JWT decoder configuration if needed
+    /*
+    @Bean
+    public ReactiveJwtDecoder jwtDecoder() {
+        // Custom JWT decoder configuration
+        NimbusReactiveJwtDecoder jwtDecoder = NimbusReactiveJwtDecoder
+            .withJwkSetUri("https://your-auth-server/.well-known/jwks.json")
+            .build();
+
+        // Add custom validation if needed
+        jwtDecoder.setJwtValidator(jwtValidator());
+
+        return jwtDecoder;
+    }
+
+    @Bean
+    public Converter<Jwt, Mono<AbstractAuthenticationToken>> jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            // Custom authority mapping logic
+            return jwt.getClaimAsStringList("roles").stream()
+                    .map(role -> new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
+                    .collect(Collectors.toList());
+        });
+        return new ReactiveJwtAuthenticationConverterAdapter(converter);
+    }
+    */
 }

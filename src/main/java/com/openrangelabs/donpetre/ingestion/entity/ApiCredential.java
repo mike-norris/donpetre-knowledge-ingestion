@@ -4,6 +4,7 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -38,6 +39,10 @@ public class ApiCredential {
     @Column("is_active")
     private Boolean isActive = true;
 
+    // ADD THIS FIELD - Missing description field
+    @Column("description")
+    private String description;
+
     // Constructors
     public ApiCredential() {}
 
@@ -59,50 +64,18 @@ public class ApiCredential {
         return expiresAt != null && LocalDateTime.now().isAfter(expiresAt);
     }
 
-    public boolean isExpiringSoon(int daysThreshold) {
-        return expiresAt != null &&
-                LocalDateTime.now().plusDays(daysThreshold).isAfter(expiresAt);
-    }
-
-    public boolean isExpiringSoon() {
-        return isExpiringSoon(7); // Default 7 days
-    }
-
-    public void markAsUsed() {
-        this.lastUsed = LocalDateTime.now();
+    public boolean isExpiringSoon(int days) {
+        if (expiresAt == null) return false;
+        return LocalDateTime.now().plusDays(days).isAfter(expiresAt) && !isExpired();
     }
 
     public long getDaysUntilExpiration() {
         if (expiresAt == null) return Long.MAX_VALUE;
-        return java.time.Duration.between(LocalDateTime.now(), expiresAt).toDays();
+        return Duration.between(LocalDateTime.now(), expiresAt).toDays();
     }
 
-    public boolean isApiToken() {
-        return "api_token".equals(credentialType);
-    }
-
-    public boolean isOAuthToken() {
-        return "oauth_token".equals(credentialType);
-    }
-
-    public boolean isApiKey() {
-        return "api_key".equals(credentialType);
-    }
-
-    public boolean isWebhookSecret() {
-        return "webhook_secret".equals(credentialType);
-    }
-
-    public boolean isUsernamePassword() {
-        return "username_password".equals(credentialType);
-    }
-
-    public void deactivate() {
-        this.isActive = false;
-    }
-
-    public void activate() {
-        this.isActive = true;
+    public void markAsUsed() {
+        this.lastUsed = LocalDateTime.now();
     }
 
     // Getters and Setters
@@ -129,6 +102,10 @@ public class ApiCredential {
 
     public Boolean getIsActive() { return isActive; }
     public void setIsActive(Boolean isActive) { this.isActive = isActive; }
+
+    // ADD THESE METHODS - Missing description getter/setter
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
 
     @Override
     public boolean equals(Object o) {

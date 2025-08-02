@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 
 /**
  * Context information for synchronization operations
+ * Supports both cursor-based and time-based incremental synchronization
  */
 public class SyncContext {
 
@@ -23,12 +24,44 @@ public class SyncContext {
         return new SyncContext(null, null, SyncType.FULL);
     }
 
+    // UPDATED: Support both cursor and time-based incremental sync
     public static SyncContext forIncrementalSync(String cursor, LocalDateTime lastSync) {
         return new SyncContext(cursor, lastSync, SyncType.INCREMENTAL);
     }
 
+    // ADDED: Convenience method for time-only incremental sync
+    public static SyncContext forIncrementalSync(LocalDateTime lastSync) {
+        return new SyncContext(null, lastSync, SyncType.INCREMENTAL);
+    }
+
+    // ADDED: Convenience method for cursor-only incremental sync
+    public static SyncContext forIncrementalSync(String cursor) {
+        return new SyncContext(cursor, null, SyncType.INCREMENTAL);
+    }
+
     public static SyncContext forRealTimeSync() {
         return new SyncContext(null, LocalDateTime.now(), SyncType.REAL_TIME);
+    }
+
+    // ADDED: Helper methods for sync strategy determination
+    public boolean hasCursor() {
+        return lastSyncCursor != null && !lastSyncCursor.trim().isEmpty();
+    }
+
+    public boolean hasLastSyncTime() {
+        return lastSyncTime != null;
+    }
+
+    public boolean isFirstSync() {
+        return !hasCursor() && !hasLastSyncTime();
+    }
+
+    public boolean shouldUseTimeBasedSync() {
+        return hasLastSyncTime() && !hasCursor();
+    }
+
+    public boolean shouldUseCursorBasedSync() {
+        return hasCursor();
     }
 
     // Getters
@@ -44,6 +77,16 @@ public class SyncContext {
                 ", lastSyncTime=" + lastSyncTime +
                 ", syncType=" + syncType +
                 ", fullResync=" + fullResync +
+                ", strategy=" + getSyncStrategy() +
                 '}';
+    }
+
+    // ADDED: Helper method to determine sync strategy
+    private String getSyncStrategy() {
+        if (isFullResync()) return "FULL";
+        if (shouldUseCursorBasedSync()) return "CURSOR_BASED";
+        if (shouldUseTimeBasedSync()) return "TIME_BASED";
+        if (isFirstSync()) return "FIRST_SYNC";
+        return "UNKNOWN";
     }
 }

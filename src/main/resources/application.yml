@@ -1,13 +1,14 @@
 # application.yml - Enhanced configuration for knowledge ingestion service
+# Updated to align with all implemented modifications
 
 spring:
   application:
     name: knowledge-ingestion
-  
+
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:dev}
-  
-  # R2DBC Configuration
+
+  # R2DBC Configuration for Reactive Database Access
   r2dbc:
     url: r2dbc:postgresql://localhost:5432/donpetre
     username: ${DB_USERNAME:don}
@@ -18,7 +19,7 @@ spring:
       max-size: 20
       max-idle-time: 30m
       validation-query: SELECT 1
-  
+
   # Flyway Configuration (for schema migrations)
   flyway:
     url: jdbc:postgresql://localhost:5432/donpetre
@@ -26,14 +27,18 @@ spring:
     password: ${DB_PASSWORD:don_pass}
     baseline-on-migrate: true
     locations: classpath:db/migration
-  
-  # Security Configuration
+    validate-on-migrate: true
+
+  # FIXED: Updated Security Configuration for OAuth2 Resource Server
   security:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: ${JWT_ISSUER_URI:http://localhost:8090/auth/realms/donpetre}
-          jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8090/auth/realms/donpetre/protocol/openid-connect/certs}
+          # Configure these based on your JWT provider
+          issuer-uri: ${JWT_ISSUER_URI:http://localhost:8080/auth/realms/donpetre}
+          jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8080/auth/realms/donpetre/protocol/openid-connect/certs}
+          # Alternative: Use a static key for development
+          # audiences: ${JWT_AUDIENCES:knowledge-ingestion}
 
 # Server Configuration
 server:
@@ -43,8 +48,13 @@ server:
     include-binding-errors: always
     include-stacktrace: on_param
     include-exception: false
+  # ADDED: Enhanced server configuration
+  netty:
+    connection-timeout: 2s
+    h2c-max-content-length: 0B
+    initial-buffer-size: 128B
 
-# OpenAPI/Swagger Configuration
+# OpenAPI/Swagger Configuration - Enhanced
 springdoc:
   api-docs:
     enabled: true
@@ -59,101 +69,200 @@ springdoc:
     displayOperationId: true
     defaultModelsExpandDepth: 2
     defaultModelExpandDepth: 2
+    disable-swagger-default-url: true
   show-actuator: true
+  # UPDATED: Enhanced group configurations matching our controllers
   group-configs:
     - group: 'credentials'
       display-name: 'Credential Management'
       paths-to-match: ['/api/credentials/**']
     - group: 'connectors'
-      display-name: 'Connector Management'
+      display-name: 'Connector Configuration'
       paths-to-match: ['/api/connectors/**']
     - group: 'jobs'
-      display-name: 'Job Management'
+      display-name: 'Job Management & Monitoring'
       paths-to-match: ['/api/jobs/**']
+    - group: 'ingestion'
+      display-name: 'Ingestion Operations'
+      paths-to-match: ['/api/ingestion/**']
 
-# Management/Actuator Configuration
+# Management/Actuator Configuration - Enhanced
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,openapi,swagger-ui
+        include: health,info,metrics,prometheus,openapi,swagger-ui,flyway
       base-path: /actuator
+      cors:
+        allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:3001}
+        allowed-methods: GET,POST,OPTIONS
   endpoint:
     health:
       show-details: when-authorized
       show-components: always
+      # ADDED: Custom health indicators
+      group:
+        readiness:
+          include: readinessState,db,diskSpace
+        liveness:
+          include: livenessState,ping
   metrics:
-    export:
-      prometheus:
-        enabled: true
+    # ADDED: Custom metrics
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active}
   info:
     env:
       enabled: true
     git:
       mode: full
+    java:
+      enabled: true
+    os:
+      enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
-# Application-specific Configuration
+# UPDATED: Application-specific Configuration
 open-range-labs:
   donpetre:
     # Security Configuration
     security:
       cors:
-        allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:3001}
-        allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+        allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:3001,http://localhost:8080,http://localhost:8084}
+        allowed-methods: GET,POST,PUT,PATCH,DELETE,OPTIONS
         allowed-headers: "*"
         allow-credentials: true
         max-age: 3600
       jwt:
+        # UPDATED: Align with our SecurityConfig implementation
         secret: ${JWT_SECRET:your-secret-key-here}
         expiration: ${JWT_EXPIRATION:86400} # 24 hours
         refresh-expiration: ${JWT_REFRESH_EXPIRATION:604800} # 7 days
-    
-    # Encryption Configuration
+        algorithm: ${JWT_ALGORITHM:HS512}
+
+    # UPDATED: Encryption Configuration for Credentials
     encryption:
       algorithm: AES/GCM/NoPadding
       key-length: 256
       secret-key: ${ENCRYPTION_SECRET_KEY:your-32-byte-encryption-key-here!!}
-    
+      # ADDED: Additional encryption settings
+      iv-length: 12
+      tag-length: 16
+
     # Rate Limiting Configuration
     rate-limiting:
       enabled: true
       requests-per-minute: ${RATE_LIMIT_RPM:100}
       burst-capacity: ${RATE_LIMIT_BURST:150}
-    
-    # Credential Management Configuration
+      # ADDED: Per-endpoint rate limiting
+      endpoints:
+        sync: ${SYNC_RATE_LIMIT:10} # Sync operations per minute
+        test-connection: ${TEST_CONNECTION_RATE_LIMIT:5} # Connection tests per minute
+
+    # UPDATED: Enhanced Credential Management Configuration
     credentials:
       default-expiration-days: ${CREDENTIAL_DEFAULT_EXPIRATION:365}
       expiration-warning-days: ${CREDENTIAL_WARNING_DAYS:7}
+      # ADDED: Support for different credential types
+      types:
+        api_token:
+          max-length: 2048
+          min-length: 8
+        oauth_token:
+          max-length: 4096
+          min-length: 16
+        api_key:
+          max-length: 1024
+          min-length: 8
+        webhook_secret:
+          max-length: 512
+          min-length: 16
+        username_password:
+          max-length: 1024
+          min-length: 8
       cleanup:
         enabled: true
         retention-days: ${CREDENTIAL_RETENTION_DAYS:2555} # 7 years for audit
         schedule: "0 2 * * SUN" # Every Sunday at 2 AM
-    
-    # External API Configuration
+
+    # UPDATED: Enhanced External API Configuration
     external-apis:
       github:
         base-url: ${GITHUB_BASE_URL:https://api.github.com}
         timeout: ${GITHUB_TIMEOUT:30s}
         max-retries: ${GITHUB_MAX_RETRIES:3}
+        rate-limit-buffer: 100 # Keep 100 requests as buffer
+        # ADDED: Default configuration for GitHub connectors
+        default-polling-interval: 30 # minutes
+        max-concurrent-requests: 5
       gitlab:
         base-url: ${GITLAB_BASE_URL:https://gitlab.com/api/v4}
         timeout: ${GITLAB_TIMEOUT:30s}
         max-retries: ${GITLAB_MAX_RETRIES:3}
+        default-polling-interval: 30 # minutes
+        max-concurrent-requests: 5
       jira:
         timeout: ${JIRA_TIMEOUT:45s}
         max-retries: ${JIRA_MAX_RETRIES:3}
+        default-polling-interval: 15 # minutes
+        max-concurrent-requests: 3
       slack:
         timeout: ${SLACK_TIMEOUT:30s}
         max-retries: ${SLACK_MAX_RETRIES:3}
+        default-polling-interval: 5 # minutes
+        max-concurrent-requests: 10
 
-# Logging Configuration
+    # ADDED: Job Management Configuration
+    jobs:
+      max-concurrent: ${MAX_CONCURRENT_JOBS:5}
+      timeout: ${JOB_TIMEOUT:PT2H} # 2 hours
+      cleanup:
+        enabled: true
+        retention-days: ${JOB_RETENTION_DAYS:90}
+        schedule: "0 3 * * MON" # Every Monday at 3 AM
+      # ADDED: Sync interval configuration
+      sync:
+        default-interval-minutes: ${DEFAULT_SYNC_INTERVAL:60}
+        min-interval-minutes: ${MIN_SYNC_INTERVAL:5}
+        max-interval-minutes: ${MAX_SYNC_INTERVAL:1440} # 24 hours
+
+    # ADDED: Connector Configuration
+    connectors:
+      # Default settings for all connectors
+      default:
+        enabled: true
+        sync-interval-minutes: 60
+        max-consecutive-errors: 5
+        retry-delay-seconds: 300 # 5 minutes
+      # Connector-specific overrides
+      github:
+        sync-interval-minutes: 30
+        data-types: ["commits", "issues", "pull_requests", "readme"]
+      gitlab:
+        sync-interval-minutes: 30
+        data-types: ["commits", "issues", "merge_requests", "readme"]
+      jira:
+        sync-interval-minutes: 15
+        data-types: ["issues", "comments", "projects"]
+      slack:
+        sync-interval-minutes: 5
+        data-types: ["messages", "threads", "files"]
+
+# UPDATED: Enhanced Logging Configuration
 logging:
   level:
     com.openrangelabs.donpetre: ${LOG_LEVEL:INFO}
     org.springframework.security: WARN
-    org.springframework.r2dbc: DEBUG
+    org.springframework.r2dbc: ${R2DBC_LOG_LEVEL:INFO}
     io.r2dbc.postgresql: WARN
     reactor.netty: WARN
+    # ADDED: GitHub API logging
+    org.kohsuke.github: WARN
+    # ADDED: Security logging
+    org.springframework.security.oauth2: DEBUG
   pattern:
     console: "%clr(%d{HH:mm:ss.SSS}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
@@ -161,9 +270,20 @@ logging:
     name: ${LOG_FILE:logs/knowledge-ingestion.log}
     max-size: 100MB
     max-history: 30
+    total-size-cap: 1GB
+
+# ADDED: Validation Configuration
+validation:
+  # Enable method-level validation
+  method-validation:
+    enabled: true
+  # Bean validation configuration
+  bean-validation:
+    enabled: true
 
 # Profile-specific configurations
 ---
+# Development Profile
 spring:
   config:
     activate:
@@ -173,44 +293,97 @@ logging:
   level:
     com.openrangelabs.donpetre: DEBUG
     org.springframework.r2dbc: DEBUG
+    org.springframework.security: DEBUG
 
 springdoc:
   swagger-ui:
     enabled: true
+    csrf:
+      enabled: false
+    supportedSubmitMethods: ["get", "post", "put", "delete", "patch"]
+
+open-range-labs:
+  donpetre:
+    external-apis:
+      github:
+        timeout: 60s # Longer timeout for debugging
+      gitlab:
+        timeout: 60s
+      jira:
+        timeout: 90s
+      slack:
+        timeout: 60s
 
 ---
+# Test Profile
 spring:
   config:
     activate:
       on-profile: test
-
-spring:
   r2dbc:
     url: r2dbc:h2:mem:///testdb
     username: sa
+    password: ""
+  flyway:
+    url: jdbc:h2:mem:testdb
+    user: sa
     password: ""
 
 logging:
   level:
     com.openrangelabs.donpetre: DEBUG
+    org.springframework.test: DEBUG
+
+open-range-labs:
+  donpetre:
+    jobs:
+      max-concurrent: 2
+      timeout: PT5M # 5 minutes for tests
+    credentials:
+      cleanup:
+        enabled: false # Disable cleanup in tests
 
 ---
+# Production Profile
 spring:
   config:
     activate:
       on-profile: prod
-
-spring:
   r2dbc:
     url: ${DATABASE_URL}
     username: ${DATABASE_USERNAME}
     password: ${DATABASE_PASSWORD}
+    pool:
+      initial-size: 20
+      max-size: 50
+      max-idle-time: 15m
 
 springdoc:
   swagger-ui:
+    enabled: false
+  api-docs:
     enabled: false
 
 logging:
   level:
     com.openrangelabs.donpetre: WARN
     org.springframework.security: ERROR
+    root: WARN
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+open-range-labs:
+  donpetre:
+    security:
+      cors:
+        allowed-origins: ${PROD_CORS_ORIGINS:https://app.donpetre.com,https://admin.donpetre.com}
+    rate-limiting:
+      requests-per-minute: 60
+      burst-capacity: 100
+    jobs:
+      max-concurrent: 10
+      timeout: PT4H # 4 hours in production

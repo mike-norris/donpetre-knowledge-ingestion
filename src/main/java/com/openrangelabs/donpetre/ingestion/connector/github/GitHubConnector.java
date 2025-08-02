@@ -12,17 +12,18 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.Collection;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
  * GitHub connector implementation
  * Handles repositories, commits, issues, pull requests, and wiki content
+ * Updated for latest GitHub API compatibility
  */
 @Slf4j
 @Component
@@ -84,6 +85,7 @@ public class GitHubConnector extends AbstractDataConnector {
                                 .startTime(startTime)
                                 .processedCount(processedCount.get())
                                 .failedCount(failedCount.get())
+                                .nextCursor(LocalDateTime.now().toString())
                                 .build()
                 ));
     }
@@ -94,18 +96,22 @@ public class GitHubConnector extends AbstractDataConnector {
         AtomicInteger processedCount = new AtomicInteger(0);
         AtomicInteger failedCount = new AtomicInteger(0);
 
-        Date since = null;
-        if (lastSyncCursor != null) {
+        // Parse lastSyncCursor to determine the last sync time
+        LocalDateTime lastSyncTime = null;
+        if (lastSyncCursor != null && !lastSyncCursor.isEmpty()) {
             try {
-                since = Date.from(LocalDateTime.parse(lastSyncCursor)
-                        .atZone(ZoneId.systemDefault()).toInstant());
+                lastSyncTime = LocalDateTime.parse(lastSyncCursor);
             } catch (Exception e) {
-                log.warn("Invalid sync cursor, performing full sync: {}", lastSyncCursor);
+                log.warn("Failed to parse lastSyncCursor: {}, performing full sync", lastSyncCursor);
             }
         }
 
-        SyncContext context = SyncContext.forIncrementalSync(lastSyncCursor,
-                since != null ? since.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime() : null);
+        // Fallback to config's last sync time if cursor parsing fails
+        if (lastSyncTime == null && config.getLastSyncTime() != null) {
+            lastSyncTime = config.getLastSyncTime();
+        }
+
+        SyncContext context = SyncContext.forIncrementalSync(lastSyncTime);
 
         return fetchData(config, context)
                 .doOnNext(item -> processedCount.incrementAndGet())
@@ -338,17 +344,52 @@ public class GitHubConnector extends AbstractDataConnector {
                 .flux();
     }
 
+    // FIXED: Updated to use non-deprecated GitHub API methods
     private KnowledgeItem createKnowledgeItemFromCommit(GHRepository repo, GHCommit commit) {
         try {
             // Network calls that throw IOException - get them all first
             GHCommit.ShortInfo info = commit.getCommitShortInfo();
-            int filesChanged = commit.getFiles().size();
             String htmlUrl = commit.getHtmlUrl().toString();
+
+            // FIXED: Use listFiles() instead of deprecated getFiles()
+            PagedIterable<GHCommit.File> filesIterable = commit.listFiles();
+            List<GHCommit.File> files = new ArrayList<>();
+
+            // Convert PagedIterable to List safely
+            for (GHCommit.File file : filesIterable) {
+                files.add(file);
+            }
+
+            // Build commit content with file changes
+            StringBuilder content = new StringBuilder();
+            content.append("Commit: ").append(commit.getSHA1()).append("\n");
+            content.append("Message: ").append(info.getMessage() != null ? info.getMessage() : "").append("\n\n");
+
+            // FIXED: Process files safely - GHCommit.File has different methods than GHPullRequest
+            content.append("Files changed (").append(files.size()).append("):\n");
+            for (GHCommit.File file : files) {
+                content.append("- ").append(file.getFileName());
+
+                // FIXED: GHCommit.File doesn't have getAdditions/getDeletions
+                // Use getChanges() if available, or just show the filename
+                try {
+                    // Some versions might have getChanges() method
+                    // content.append(" (").append(file.getChanges()).append(" changes)");
+
+                    // For now, just show the filename and status
+                    String status = file.getStatus() != null ? file.getStatus() : "modified";
+                    content.append(" (").append(status).append(")");
+                } catch (Exception e) {
+                    // If no additional info is available, just show the filename
+                    content.append(" (modified)");
+                }
+                content.append("\n");
+            }
 
             // Safe property access
             return KnowledgeItem.builder()
-                    .title("Commit: " + commit.getSHA1().substring(0, 8) + " - " + info.getMessage())
-                    .content(info.getMessage())
+                    .title("Commit: " + commit.getSHA1().substring(0, 8) + " - " + (info.getMessage() != null ? info.getMessage() : "No message"))
+                    .content(content.toString())
                     .sourceType("github_commit")
                     .sourceReference(repo.getFullName() + "/commit/" + commit.getSHA1())
                     .author(info.getAuthor() != null ? info.getAuthor().getName() : "Unknown")
@@ -356,7 +397,7 @@ public class GitHubConnector extends AbstractDataConnector {
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("sha", commit.getSHA1())
                     .addMetadata("url", htmlUrl)
-                    .addMetadata("files_changed", filesChanged)
+                    .addMetadata("files_changed", files.size())
                     .build();
         } catch (IOException e) {
             throw new RuntimeException("Failed to create knowledge item from commit", e);
@@ -470,10 +511,11 @@ public class GitHubConnector extends AbstractDataConnector {
         }
     }
 
+    // FIXED: Updated to use non-deprecated getContent() method
     private KnowledgeItem createKnowledgeItemFromReadme(GHRepository repo, GHContent readme) {
         try {
-            // Network calls that throw IOException - get them all first
-            String content = readme.getContent();
+            // FIXED: Use read() method instead of deprecated getContent()
+            String content = getContentAsString(readme);
             String defaultBranch = repo.getDefaultBranch();
             String htmlUrl = readme.getHtmlUrl();
 
@@ -487,11 +529,25 @@ public class GitHubConnector extends AbstractDataConnector {
                     .createdAt(LocalDateTime.now()) // README doesn't have creation date in API
                     .addMetadata("repository", repo.getFullName())
                     .addMetadata("file_name", readme.getName())
+                    .addMetadata("file_path", readme.getPath())
                     .addMetadata("url", htmlUrl)
                     .addMetadata("size", readme.getSize())
                     .build();
-        } catch (IOException e) {
+        } catch (Exception e) {
             throw new RuntimeException("Failed to create knowledge item from README", e);
+        }
+    }
+
+    // FIXED: Helper method to read content using non-deprecated API
+    private String getContentAsString(GHContent ghContent) {
+        try {
+            // Use read() instead of deprecated getContent()
+            try (InputStream inputStream = ghContent.read()) {
+                return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read content for {}: {}", ghContent.getPath(), e.getMessage());
+            return "";
         }
     }
 

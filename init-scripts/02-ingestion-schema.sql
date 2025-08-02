@@ -106,3 +106,48 @@ INSERT INTO connector_configs (connector_type, name, enabled, configuration, cre
                                                                                                "polling_interval_minutes": 5
                                                                                              }', (SELECT id FROM users WHERE username = 'admin'))
 ON CONFLICT (connector_type, name) DO NOTHING;
+
+-- Database migration to add sync tracking fields to connector_configs table
+-- File: src/main/resources/db/migration/V1_2__Add_sync_tracking_to_connector_configs.sql
+
+-- Add sync tracking columns to connector_configs table
+ALTER TABLE connector_configs
+    ADD COLUMN last_sync_time TIMESTAMP;
+
+ALTER TABLE connector_configs
+    ADD COLUMN last_sync_cursor VARCHAR(500);
+
+ALTER TABLE connector_configs
+    ADD COLUMN sync_interval_minutes INTEGER DEFAULT 60;
+
+ALTER TABLE connector_configs
+    ADD COLUMN last_successful_sync TIMESTAMP;
+
+ALTER TABLE connector_configs
+    ADD COLUMN consecutive_error_count INTEGER DEFAULT 0;
+
+ALTER TABLE connector_configs
+    ADD COLUMN last_error_message TEXT;
+
+ALTER TABLE connector_configs
+    ADD COLUMN last_error_time TIMESTAMP;
+
+-- Add indexes for performance
+CREATE INDEX idx_connector_configs_last_sync_time ON connector_configs(last_sync_time);
+CREATE INDEX idx_connector_configs_enabled_sync_interval ON connector_configs(enabled, sync_interval_minutes);
+CREATE INDEX idx_connector_configs_error_count ON connector_configs(consecutive_error_count);
+
+-- Update existing records to have default sync interval
+UPDATE connector_configs
+SET sync_interval_minutes = 60
+WHERE sync_interval_minutes IS NULL;
+
+-- Add check constraint to ensure positive sync interval
+ALTER TABLE connector_configs
+    ADD CONSTRAINT chk_sync_interval_positive
+        CHECK (sync_interval_minutes IS NULL OR sync_interval_minutes > 0);
+
+-- Add check constraint to ensure error count is non-negative
+ALTER TABLE connector_configs
+    ADD CONSTRAINT chk_error_count_non_negative
+        CHECK (consecutive_error_count >= 0);

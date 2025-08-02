@@ -528,6 +528,38 @@ public class CredentialController {
             @Schema(description = "Urgency level") UrgencyLevel urgencyLevel,
             @Schema(description = "Last usage timestamp") LocalDateTime lastUsed
     ) {
+        // ADDED: Public getter methods for record components
+        // Records automatically provide getter methods, but the error suggests
+        // the compiler can't find them. These explicit methods ensure compatibility.
+
+        public UUID getId() {
+            return id;
+        }
+
+        public UUID getConnectorConfigId() {
+            return connectorConfigId;
+        }
+
+        public String getCredentialType() {
+            return credentialType;
+        }
+
+        public LocalDateTime getExpiresAt() {
+            return expiresAt;
+        }
+
+        public long getDaysUntilExpiration() {
+            return daysUntilExpiration;
+        }
+
+        public UrgencyLevel getUrgencyLevel() {
+            return urgencyLevel;
+        }
+
+        public LocalDateTime getLastUsed() {
+            return lastUsed;
+        }
+
         public static Builder builder() {
             return new Builder();
         }
@@ -541,13 +573,40 @@ public class CredentialController {
             private UrgencyLevel urgencyLevel;
             private LocalDateTime lastUsed;
 
-            public Builder id(UUID id) { this.id = id; return this; }
-            public Builder connectorConfigId(UUID connectorConfigId) { this.connectorConfigId = connectorConfigId; return this; }
-            public Builder credentialType(String credentialType) { this.credentialType = credentialType; return this; }
-            public Builder expiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; return this; }
-            public Builder daysUntilExpiration(long daysUntilExpiration) { this.daysUntilExpiration = daysUntilExpiration; return this; }
-            public Builder urgencyLevel(UrgencyLevel urgencyLevel) { this.urgencyLevel = urgencyLevel; return this; }
-            public Builder lastUsed(LocalDateTime lastUsed) { this.lastUsed = lastUsed; return this; }
+            public Builder id(UUID id) {
+                this.id = id;
+                return this;
+            }
+
+            public Builder connectorConfigId(UUID connectorConfigId) {
+                this.connectorConfigId = connectorConfigId;
+                return this;
+            }
+
+            public Builder credentialType(String credentialType) {
+                this.credentialType = credentialType;
+                return this;
+            }
+
+            public Builder expiresAt(LocalDateTime expiresAt) {
+                this.expiresAt = expiresAt;
+                return this;
+            }
+
+            public Builder daysUntilExpiration(long daysUntilExpiration) {
+                this.daysUntilExpiration = daysUntilExpiration;
+                return this;
+            }
+
+            public Builder urgencyLevel(UrgencyLevel urgencyLevel) {
+                this.urgencyLevel = urgencyLevel;
+                return this;
+            }
+
+            public Builder lastUsed(LocalDateTime lastUsed) {
+                this.lastUsed = lastUsed;
+                return this;
+            }
 
             public CredentialExpirationDto build() {
                 return new CredentialExpirationDto(id, connectorConfigId, credentialType, expiresAt,

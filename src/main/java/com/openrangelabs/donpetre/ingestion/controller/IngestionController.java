@@ -10,6 +10,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -83,23 +85,28 @@ public class IngestionController {
             @Valid @RequestBody TriggerSyncRequest request) {
 
         return orchestrationService.testConnection(request.getConnectorType(), request.getConfigName())
-                .map(result -> ResponseEntity.ok(Map.of(
-                        "connectorType", request.getConnectorType(),
-                        "configName", request.getConfigName(),
-                        "connected", result,
-                        "status", result ? "SUCCESS" : "FAILED",
-                        "timestamp", java.time.LocalDateTime.now()
-                )))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.badRequest().body(Map.of(
-                                "connectorType", request.getConnectorType(),
-                                "configName", request.getConfigName(),
-                                "connected", false,
-                                "status", "ERROR",
-                                "error", error.getMessage(),
-                                "timestamp", java.time.LocalDateTime.now()
-                        )))
-                );
+                .map(result -> {
+                    // FIXED: Use HashMap instead of Map.of() to avoid generic type conflicts
+                    Map<String, Object> response = new HashMap<>();
+                    response.put("connectorType", request.getConnectorType());
+                    response.put("configName", request.getConfigName());
+                    response.put("connected", result);
+                    response.put("status", result ? "SUCCESS" : "FAILED");
+                    response.put("timestamp", LocalDateTime.now());
+
+                    return ResponseEntity.ok(response);
+                })
+                .onErrorResume(error -> {
+                    Map<String, Object> errorResponse = new HashMap<>();
+                    errorResponse.put("connectorType", request.getConnectorType());
+                    errorResponse.put("configName", request.getConfigName());
+                    errorResponse.put("connected", false);
+                    errorResponse.put("status", "ERROR");
+                    errorResponse.put("error", error.getMessage());
+                    errorResponse.put("timestamp", LocalDateTime.now());
+
+                    return Mono.just(ResponseEntity.badRequest().body(errorResponse));
+                });
     }
 
     /**
@@ -120,15 +127,26 @@ public class IngestionController {
             @PathVariable String configName) {
 
         return orchestrationService.getConnectorMetrics(connectorType, configName)
-                .map(metrics -> ResponseEntity.ok(Map.of(
-                        "connectorType", connectorType,
-                        "configName", configName,
-                        "timestamp", java.time.LocalDateTime.now(),
-                        "data", metrics
-                )))
-                .onErrorResume(error ->
-                        Mono.just(ResponseEntity.notFound().build())
-                );
+                .map(metrics -> {
+                    // FIXED: Use HashMap instead of Map.of() to avoid generic type conflicts (LINE 93 AREA)
+                    Map<String, Object> response = new HashMap<>();
+                    response.put("connectorType", connectorType);
+                    response.put("configName", configName);
+                    response.put("timestamp", LocalDateTime.now());
+                    response.put("data", metrics);
+
+                    return ResponseEntity.ok(response);
+                })
+                .onErrorResume(error -> {
+                    Map<String, Object> errorResponse = new HashMap<>();
+                    errorResponse.put("connectorType", connectorType);
+                    errorResponse.put("configName", configName);
+                    errorResponse.put("status", "ERROR");
+                    errorResponse.put("error", error.getMessage());
+                    errorResponse.put("timestamp", LocalDateTime.now());
+
+                    return Mono.just(ResponseEntity.status(404).body(errorResponse));
+                });
     }
 
     /**
@@ -142,17 +160,19 @@ public class IngestionController {
     @GetMapping("/connectors")
     @PreAuthorize("hasRole('ADMIN') or hasRole('USER')")
     public ResponseEntity<Map<String, Object>> getAvailableConnectors() {
-        Map<String, Object> response = Map.of(
-                "connectors", orchestrationService.getAvailableConnectors().keySet(),
-                "count", orchestrationService.getAvailableConnectors().size(),
-                "timestamp", java.time.LocalDateTime.now(),
-                "descriptions", Map.of(
-                        "github", "GitHub repositories, commits, issues, and pull requests",
-                        "gitlab", "GitLab projects, commits, issues, and merge requests",
-                        "jira", "Jira issues, comments, and project data",
-                        "slack", "Slack messages, threads, and file shares"
-                )
-        );
+        // FIXED: Use HashMap to avoid generic type conflicts
+        Map<String, Object> descriptions = new HashMap<>();
+        descriptions.put("github", "GitHub repositories, commits, issues, and pull requests");
+        descriptions.put("gitlab", "GitLab projects, commits, issues, and merge requests");
+        descriptions.put("jira", "Jira issues, comments, and project data");
+        descriptions.put("slack", "Slack messages, threads, and file shares");
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("connectors", orchestrationService.getAvailableConnectors().keySet());
+        response.put("count", orchestrationService.getAvailableConnectors().size());
+        response.put("timestamp", LocalDateTime.now());
+        response.put("descriptions", descriptions);
+
         return ResponseEntity.ok(response);
     }
 
@@ -169,12 +189,12 @@ public class IngestionController {
     public Mono<ResponseEntity<Map<String, Object>>> getIngestionStatus() {
         // This would typically aggregate data from multiple services
         return Mono.fromCallable(() -> {
-            Map<String, Object> status = Map.of(
-                    "systemStatus", "OPERATIONAL",
-                    "availableConnectors", orchestrationService.getAvailableConnectors().size(),
-                    "timestamp", java.time.LocalDateTime.now(),
-                    "version", "1.0.0-SNAPSHOT"
-            );
+            Map<String, Object> status = new HashMap<>();
+            status.put("systemStatus", "OPERATIONAL");
+            status.put("availableConnectors", orchestrationService.getAvailableConnectors().size());
+            status.put("timestamp", LocalDateTime.now());
+            status.put("version", "1.0.0-SNAPSHOT");
+
             return ResponseEntity.ok(status);
         });
     }
@@ -195,13 +215,49 @@ public class IngestionController {
         // Implementation would depend on job management system
         return Mono.fromCallable(() -> {
             // Placeholder implementation
-            Map<String, Object> response = Map.of(
-                    "jobId", jobId,
-                    "status", "CANCELLATION_REQUESTED",
-                    "message", "Job cancellation has been requested",
-                    "timestamp", java.time.LocalDateTime.now()
-            );
+            Map<String, Object> response = new HashMap<>();
+            response.put("jobId", jobId);
+            response.put("status", "CANCELLATION_REQUESTED");
+            response.put("message", "Job cancellation has been requested");
+            response.put("timestamp", LocalDateTime.now());
+
             return ResponseEntity.ok(response);
         });
+    }
+
+    // ADDED: Helper methods for consistent response building
+
+    /**
+     * Creates a success response map
+     */
+    private Map<String, Object> createSuccessResponse(String message) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "SUCCESS");
+        response.put("message", message);
+        response.put("timestamp", LocalDateTime.now());
+        return response;
+    }
+
+    /**
+     * Creates an error response map
+     */
+    private Map<String, Object> createErrorResponse(String message) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "ERROR");
+        response.put("message", message);
+        response.put("timestamp", LocalDateTime.now());
+        return response;
+    }
+
+    /**
+     * Creates an error response map with details
+     */
+    private Map<String, Object> createErrorResponse(String message, Exception error) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "ERROR");
+        response.put("message", message);
+        response.put("error", error.getMessage());
+        response.put("timestamp", LocalDateTime.now());
+        return response;
     }
 }
