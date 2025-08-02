@@ -13,7 +13,7 @@
 
     <artifactId>donpetre-knowledge-ingestion</artifactId>
     <packaging>jar</packaging>
-    <n>DonPetre Knowledge Ingestion Service</n>
+    <name>DonPetre Knowledge Ingestion Service</name>
     <description>Knowledge Ingestion service for DonPetre Platform</description>
 
     <properties>
@@ -96,6 +96,13 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- SpringDoc OpenAPI (Swagger) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.6.0</version>
         </dependency>
 
         <!-- Configuration Processor -->
