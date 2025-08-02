@@ -5,7 +5,6 @@
          http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <!-- Reference to Parent POM -->
     <parent>
         <groupId>com.openrangelabs.donpetre</groupId>
         <artifactId>donpetre-parent</artifactId>
@@ -18,7 +17,6 @@
     <description>Knowledge Ingestion service for DonPetre Platform</description>
 
     <properties>
-        <!-- Corrected main class path to match your existing package structure -->
         <start-class>com.openrangelabs.donpetre.ingestion.KnowledgeIngestionApplication</start-class>
     </properties>
 
@@ -111,11 +109,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 
