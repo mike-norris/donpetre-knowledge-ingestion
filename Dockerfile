@@ -6,18 +6,19 @@ WORKDIR /app
 COPY mvnw .
 COPY .mvn .mvn
 COPY pom.xml .
+COPY donpetre-knowledge-ingestion/pom.xml donpetre-knowledge-ingestion/
 
 # Make mvnw executable
 RUN chmod +x mvnw
 
 # Download dependencies
-RUN ./mvnw dependency:go-offline -B
+RUN ./mvnw dependency:go-offline -B -f donpetre-knowledge-ingestion/pom.xml
 
 # Copy source code
-COPY src src
+COPY donpetre-knowledge-ingestion/src donpetre-knowledge-ingestion/src
 
 # Build the application
-RUN ./mvnw clean package -DskipTests -B
+RUN ./mvnw clean package -DskipTests -B -f donpetre-knowledge-ingestion/pom.xml
 
 # Runtime stage
 FROM amazoncorretto:17-alpine AS runtime
@@ -32,7 +33,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Copy the JAR from builder stage
-COPY --from=builder /app/target/knowledge-ingestion-*.jar app.jar
+COPY --from=builder /app/donpetre-knowledge-ingestion/target/donpetre-knowledge-ingestion.jar app.jar
 
 # Create directories and set permissions
 RUN mkdir -p /app/logs /app/temp \

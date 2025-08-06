@@ -37,3 +37,4 @@ logs/
 
 ### Config ###
 secrets/*.txt
+.env

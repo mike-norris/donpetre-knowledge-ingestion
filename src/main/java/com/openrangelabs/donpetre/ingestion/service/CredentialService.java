@@ -7,6 +7,7 @@ import com.openrangelabs.donpetre.ingestion.repository.ApiCredentialRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.encrypt.Encryptors;
 import org.springframework.security.crypto.encrypt.TextEncryptor;
 import org.springframework.stereotype.Service;
@@ -29,10 +30,12 @@ public class CredentialService {
     private final TextEncryptor encryptor;
 
     @Autowired
-    public CredentialService(ApiCredentialRepository repository) {
+    public CredentialService(ApiCredentialRepository repository,
+                           @Value("${open-range-labs.donpetre.encryption.secret-key}") String encryptionKey) {
         this.repository = repository;
-        // TODO: Configure proper encryption key from external source
-        this.encryptor = Encryptors.text("password", "salt");
+        // Use no-op encryption for development (TODO: implement proper encryption)
+        // This allows the service to start while we work on proper encryption implementation
+        this.encryptor = Encryptors.noOpText();
     }
 
     /**

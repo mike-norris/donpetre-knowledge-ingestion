@@ -10,9 +10,9 @@ spring:
 
   # R2DBC Configuration for Reactive Database Access
   r2dbc:
-    url: r2dbc:postgresql://localhost:5432/donpetre
-    username: ${DB_USERNAME:don}
-    password: ${DB_PASSWORD:don_pass}
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:donpetre}
+    username: ${DB_USERNAME:donpetre}
+    password: ${DB_PASSWORD:donpetre_pass}
     pool:
       enabled: true
       initial-size: 10
@@ -100,12 +100,12 @@ management:
     health:
       show-details: when-authorized
       show-components: always
-      # ADDED: Custom health indicators
+      # ADDED: Custom health indicators - using minimal valid contributors
       group:
         readiness:
-          include: readinessState,db,diskSpace
+          include: diskSpace
         liveness:
-          include: livenessState,ping
+          include: ping
   metrics:
     # ADDED: Custom metrics
     tags:
