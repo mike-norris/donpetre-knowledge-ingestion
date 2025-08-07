@@ -4,6 +4,8 @@ import com.openrangelabs.donpetre.ingestion.entity.ConnectorConfig;
 import com.openrangelabs.donpetre.ingestion.model.SyncResult;
 import com.openrangelabs.donpetre.ingestion.model.SyncType;
 import com.openrangelabs.donpetre.ingestion.service.ConnectorConfigService;
+import com.openrangelabs.donpetre.ingestion.service.CredentialService;
+import com.openrangelabs.donpetre.ingestion.service.IngestionJobService;
 import com.openrangelabs.donpetre.ingestion.service.IngestionOrchestrationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

@@ -254,8 +254,7 @@ public class CredentialService {
                 .flatMap(exists -> {
                     if (exists) {
                         return Mono.error(new CredentialAlreadyExistsException(
-                                "Credential already exists for connector: " + request.getConnectorConfigId() + 
-                                " with type: " + request.getCredentialType()));
+                                request.getConnectorConfigId(), request.getCredentialType()));
                     }
 
                     String encryptedValue = encryptor.encrypt(request.getValue());
@@ -283,8 +282,8 @@ public class CredentialService {
     /**
      * Get credentials by connector ID
      */
-    public Flux<CredentialResponseDto> getCredentialsByConnector(UUID connectorId) {
-        return repository.findByConnectorConfigId(connectorId)
+    public Flux<CredentialResponseDto> getCredentialsByConnector(UUID connectorConfigId) {
+        return repository.findByConnectorConfigId(connectorConfigId)
                 .map(this::toResponseDto);
     }
 
@@ -297,7 +296,6 @@ public class CredentialService {
                 .switchIfEmpty(Mono.error(new CredentialNotFoundException("Credential not found: " + credentialId)))
                 .flatMap(credential -> {
                     credential.setEncryptedValue(encryptor.encrypt(newPlainTextValue));
-                    credential.setUpdatedAt(LocalDateTime.now());
                     return repository.save(credential);
                 })
                 .map(this::toResponseDto)
@@ -335,7 +333,6 @@ public class CredentialService {
         return repository.findById(credentialId)
                 .flatMap(credential -> {
                     credential.setEncryptedValue(encryptor.encrypt(newValue));
-                    credential.setUpdatedAt(LocalDateTime.now());
                     return repository.save(credential);
                 })
                 .doOnSuccess(credential -> logger.info("Rotated credential: {}", credentialId));
@@ -362,17 +359,7 @@ public class CredentialService {
      * Convert ApiCredential entity to CredentialResponseDto
      */
     private CredentialResponseDto toResponseDto(ApiCredential credential) {
-        CredentialResponseDto dto = new CredentialResponseDto();
-        dto.setId(credential.getId());
-        dto.setConnectorConfigId(credential.getConnectorConfigId());
-        dto.setCredentialType(credential.getCredentialType());
-        dto.setCreatedAt(credential.getCreatedAt());
-        dto.setUpdatedAt(credential.getUpdatedAt());
-        dto.setLastUsed(credential.getLastUsed());
-        dto.setExpiresAt(credential.getExpiresAt());
-        dto.setIsActive(credential.getIsActive());
-        // Intentionally not setting credential value for security
-        return dto;
+        return CredentialResponseDto.fromEntity(credential);
     }
 
     /**

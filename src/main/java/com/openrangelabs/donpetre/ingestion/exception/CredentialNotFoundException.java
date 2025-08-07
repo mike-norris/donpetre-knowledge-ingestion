@@ -44,6 +44,18 @@ public class CredentialNotFoundException extends CredentialException {
     }
 
     /**
+     * Constructs a new credential not found exception with custom message.
+     *
+     * @param message the error message
+     */
+    public CredentialNotFoundException(String message) {
+        super(message);
+        this.credentialId = null;
+        this.connectorConfigId = null;
+        this.credentialType = null;
+    }
+
+    /**
      * Gets the credential ID that was not found.
      *
      * @return the credential ID, or null if not applicable

@@ -45,8 +45,7 @@ class CredentialServiceTest {
         SecretKey secretKey = keyGenerator.generateKey();
         testEncryptionKey = Base64.getEncoder().encodeToString(secretKey.getEncoded());
 
-        credentialService = new CredentialService(repository);
-        ReflectionTestUtils.setField(credentialService, "encryptionKey", testEncryptionKey);
+        credentialService = new CredentialService(repository, testEncryptionKey);
     }
 
     @Test
@@ -57,14 +56,14 @@ class CredentialServiceTest {
         String credentialValue = "secret-token-123";
 
         StoreCredentialRequest request = new StoreCredentialRequest();
-        request.setConnectorId(connectorId);
-        request.setCredentialName(credentialName);
-        request.setCredentialValue(credentialValue);
+        request.setConnectorConfigId(connectorId);
+        request.setCredentialType(credentialName);
+        request.setValue(credentialValue);
 
         ApiCredential savedCredential = new ApiCredential();
         savedCredential.setId(UUID.randomUUID());
-        savedCredential.setConnectorId(connectorId);
-        savedCredential.setCredentialName(credentialName);
+        savedCredential.setConnectorConfigId(connectorId);
+        savedCredential.setCredentialType(credentialName);
         savedCredential.setEncryptedValue("encrypted-value");
         savedCredential.setCreatedAt(LocalDateTime.now());
 
@@ -77,8 +76,8 @@ class CredentialServiceTest {
         StepVerifier.create(credentialService.storeCredential(request))
             .expectNextMatches(response -> {
                 assertThat(response.getId()).isEqualTo(savedCredential.getId());
-                assertThat(response.getConnectorId()).isEqualTo(connectorId);
-                assertThat(response.getCredentialName()).isEqualTo(credentialName);
+                assertThat(response.getConnectorConfigId()).isEqualTo(connectorId);
+                assertThat(response.getCredentialType()).isEqualTo(credentialName);
                 assertThat(response.getCreatedAt()).isEqualTo(savedCredential.getCreatedAt());
                 // Should not contain the actual credential value
                 assertThat(response.getCredentialValue()).isNull();
