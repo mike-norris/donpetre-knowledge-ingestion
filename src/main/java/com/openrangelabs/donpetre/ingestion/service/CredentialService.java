@@ -1,8 +1,12 @@
 package com.openrangelabs.donpetre.ingestion.service;
 
+import com.openrangelabs.donpetre.ingestion.dto.CredentialResponseDto;
 import com.openrangelabs.donpetre.ingestion.dto.CredentialStatsDto;
 import com.openrangelabs.donpetre.ingestion.dto.CredentialUsageDto;
+import com.openrangelabs.donpetre.ingestion.dto.StoreCredentialRequest;
 import com.openrangelabs.donpetre.ingestion.entity.ApiCredential;
+import com.openrangelabs.donpetre.ingestion.exception.CredentialAlreadyExistsException;
+import com.openrangelabs.donpetre.ingestion.exception.CredentialNotFoundException;
 import com.openrangelabs.donpetre.ingestion.repository.ApiCredentialRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -240,6 +244,151 @@ public class CredentialService {
                 )
                 .doOnSuccess(newCredential -> logger.info("Rotated credential for connector {} of type: {}",
                         connectorConfigId, credentialType));
+    }
+
+    /**
+     * Store credential from request DTO
+     */
+    public Mono<CredentialResponseDto> storeCredential(StoreCredentialRequest request) {
+        return repository.existsByConnectorIdAndCredentialName(request.getConnectorConfigId(), request.getCredentialType())
+                .flatMap(exists -> {
+                    if (exists) {
+                        return Mono.error(new CredentialAlreadyExistsException(
+                                "Credential already exists for connector: " + request.getConnectorConfigId() + 
+                                " with type: " + request.getCredentialType()));
+                    }
+
+                    String encryptedValue = encryptor.encrypt(request.getValue());
+                    ApiCredential credential = new ApiCredential();
+                    credential.setConnectorConfigId(request.getConnectorConfigId());
+                    credential.setCredentialType(request.getCredentialType());
+                    credential.setEncryptedValue(encryptedValue);
+                    credential.setExpiresAt(request.getExpiresAt());
+
+                    return repository.save(credential);
+                })
+                .map(this::toResponseDto)
+                .doOnSuccess(response -> logger.info("Stored credential {} for connector {}", 
+                        response.getId(), request.getConnectorConfigId()));
+    }
+
+    /**
+     * Get credential by ID (returns DTO without decrypted value)
+     */
+    public Mono<CredentialResponseDto> getCredential(UUID credentialId) {
+        return repository.findById(credentialId)
+                .map(this::toResponseDto);
+    }
+
+    /**
+     * Get credentials by connector ID
+     */
+    public Flux<CredentialResponseDto> getCredentialsByConnector(UUID connectorId) {
+        return repository.findByConnectorConfigId(connectorId)
+                .map(this::toResponseDto);
+    }
+
+
+    /**
+     * Update credential value
+     */
+    public Mono<CredentialResponseDto> updateCredential(UUID credentialId, String newPlainTextValue) {
+        return repository.findById(credentialId)
+                .switchIfEmpty(Mono.error(new CredentialNotFoundException("Credential not found: " + credentialId)))
+                .flatMap(credential -> {
+                    credential.setEncryptedValue(encryptor.encrypt(newPlainTextValue));
+                    credential.setUpdatedAt(LocalDateTime.now());
+                    return repository.save(credential);
+                })
+                .map(this::toResponseDto)
+                .doOnSuccess(response -> logger.info("Updated credential: {}", credentialId));
+    }
+
+    /**
+     * Delete credential by ID
+     */
+    public Mono<Void> deleteCredential(UUID credentialId) {
+        return repository.deleteById(credentialId)
+                .doOnSuccess(v -> logger.info("Deleted credential: {}", credentialId));
+    }
+
+    /**
+     * Delete all credentials for a connector
+     */
+    public Mono<Long> deleteCredentialsByConnector(UUID connectorId) {
+        return repository.deleteByConnectorId(connectorId)
+                .doOnSuccess(count -> logger.info("Deleted {} credentials for connector: {}", count, connectorId));
+    }
+
+    /**
+     * Get credential usage statistics for a connector
+     */
+    public Flux<CredentialUsageStats> getCredentialUsage(UUID connectorId) {
+        return repository.findCredentialUsage(connectorId)
+                .map(result -> new CredentialUsageStats(result.getCredentialName(), result.getLastUsed()));
+    }
+
+    /**
+     * Rotate credential by ID
+     */
+    public Mono<ApiCredential> rotateCredential(UUID credentialId, String newValue) {
+        return repository.findById(credentialId)
+                .flatMap(credential -> {
+                    credential.setEncryptedValue(encryptor.encrypt(newValue));
+                    credential.setUpdatedAt(LocalDateTime.now());
+                    return repository.save(credential);
+                })
+                .doOnSuccess(credential -> logger.info("Rotated credential: {}", credentialId));
+    }
+
+    /**
+     * Test if credential can be decrypted successfully
+     */
+    public Mono<Boolean> testCredential(UUID connectorId, String credentialName) {
+        return repository.findByConnectorIdAndCredentialName(connectorId, credentialName)
+                .map(credential -> {
+                    try {
+                        encryptor.decrypt(credential.getEncryptedValue());
+                        return true;
+                    } catch (Exception e) {
+                        logger.warn("Failed to decrypt credential for testing: {}", e.getMessage());
+                        return false;
+                    }
+                })
+                .defaultIfEmpty(false);
+    }
+
+    /**
+     * Convert ApiCredential entity to CredentialResponseDto
+     */
+    private CredentialResponseDto toResponseDto(ApiCredential credential) {
+        CredentialResponseDto dto = new CredentialResponseDto();
+        dto.setId(credential.getId());
+        dto.setConnectorConfigId(credential.getConnectorConfigId());
+        dto.setCredentialType(credential.getCredentialType());
+        dto.setCreatedAt(credential.getCreatedAt());
+        dto.setUpdatedAt(credential.getUpdatedAt());
+        dto.setLastUsed(credential.getLastUsed());
+        dto.setExpiresAt(credential.getExpiresAt());
+        dto.setIsActive(credential.getIsActive());
+        // Intentionally not setting credential value for security
+        return dto;
+    }
+
+    /**
+     * Inner class for credential usage statistics
+     */
+    public static class CredentialUsageStats {
+        private final String credentialName;
+        private final LocalDateTime lastUsed;
+
+        public CredentialUsageStats(String credentialName, LocalDateTime lastUsed) {
+            this.credentialName = credentialName;
+            this.lastUsed = lastUsed;
+        }
+
+        public String getCredentialName() { return credentialName; }
+        public LocalDateTime getLastUsed() { return lastUsed; }
     }
 
 }

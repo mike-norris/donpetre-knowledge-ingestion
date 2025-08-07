@@ -158,6 +158,36 @@ public interface IngestionJobRepository extends R2dbcRepository<IngestionJob, UU
     Mono<Integer> deleteOldJobs(@Param("threshold") LocalDateTime threshold);
 
     /**
+     * Delete jobs created before a specific date
+     */
+    @Query("DELETE FROM ingestion_jobs WHERE started_at < :cutoffDate")
+    Mono<Integer> deleteByCreatedAtBefore(@Param("cutoffDate") LocalDateTime cutoffDate);
+
+    /**
+     * Find jobs by connector config ordered by created date desc
+     */
+    Flux<IngestionJob> findByConnectorConfigIdOrderByCreatedAtDesc(UUID connectorConfigId);
+
+    /**
+     * Find first job by connector config and status ordered by created date desc
+     */
+    Mono<IngestionJob> findFirstByConnectorConfigIdAndStatusOrderByCreatedAtDesc(UUID connectorConfigId, String status);
+
+    /**
+     * Count jobs by connector config, status and created after date
+     */
+    @Query("""
+        SELECT COUNT(*) FROM ingestion_jobs 
+        WHERE connector_config_id = :connectorConfigId 
+        AND status = :status 
+        AND started_at > :since
+        """)
+    Mono<Long> countByConnectorConfigIdAndStatusAndCreatedAtAfter(
+            @Param("connectorConfigId") UUID connectorConfigId,
+            @Param("status") String status,
+            @Param("since") LocalDateTime since);
+
+    /**
      * Interface for job statistics by connector type
      */
     interface JobStatsByConnectorType {

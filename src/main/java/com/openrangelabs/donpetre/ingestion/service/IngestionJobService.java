@@ -110,4 +110,121 @@ public class IngestionJobService {
         LocalDateTime threshold = LocalDateTime.now().minusMinutes(minutesThreshold);
         return repository.findLongRunningJobs(threshold);
     }
+
+    /**
+     * Update job status with optional error message
+     */
+    public Mono<IngestionJob> updateJobStatus(UUID jobId, String status, String errorMessage) {
+        logger.debug("Updating job status: {} to {}", jobId, status);
+        return repository.findById(jobId)
+                .flatMap(job -> {
+                    job.setStatus(status);
+                    
+                    if (errorMessage != null && !errorMessage.trim().isEmpty()) {
+                        job.setErrorMessage(errorMessage);
+                    }
+                    
+                    if ("COMPLETED".equals(status)) {
+                        job.setCompletedAt(LocalDateTime.now());
+                    } else if ("FAILED".equals(status)) {
+                        job.setCompletedAt(LocalDateTime.now());
+                    }
+                    
+                    return repository.save(job);
+                })
+                .doOnSuccess(job -> logger.debug("Updated job {} status to {}", jobId, status))
+                .switchIfEmpty(Mono.error(new RuntimeException("Job not found: " + jobId)));
+    }
+
+    /**
+     * Mark job as completed with metrics
+     */
+    public Mono<IngestionJob> markJobCompleted(UUID jobId, int processedItems, int failedItems, String nextCursor) {
+        logger.debug("Marking job {} as completed: processed={}, failed={}", jobId, processedItems, failedItems);
+        return repository.findById(jobId)
+                .flatMap(job -> {
+                    job.setStatus("COMPLETED");
+                    job.setCompletedAt(LocalDateTime.now());
+                    job.setItemsProcessed(processedItems);
+                    job.setItemsFailed(failedItems);
+                    
+                    if (nextCursor != null) {
+                        job.setLastSyncCursor(nextCursor);
+                    }
+                    
+                    return repository.save(job);
+                })
+                .doOnSuccess(job -> logger.info("Job {} completed: processed {}, failed {}", jobId, processedItems, failedItems))
+                .switchIfEmpty(Mono.error(new RuntimeException("Job not found: " + jobId)));
+    }
+
+    /**
+     * Mark job as failed with error message
+     */
+    public Mono<IngestionJob> markJobFailed(UUID jobId, String errorMessage) {
+        logger.debug("Marking job {} as failed: {}", jobId, errorMessage);
+        return repository.findById(jobId)
+                .flatMap(job -> {
+                    job.setStatus("FAILED");
+                    job.setCompletedAt(LocalDateTime.now());
+                    job.setErrorMessage(errorMessage);
+                    
+                    return repository.save(job);
+                })
+                .doOnSuccess(job -> logger.warn("Job {} failed: {}", jobId, errorMessage))
+                .switchIfEmpty(Mono.error(new RuntimeException("Job not found: " + jobId)));
+    }
+
+    /**
+     * Delete old jobs before a specific date
+     */
+    public Mono<Long> deleteOldJobs(LocalDateTime cutoffDate) {
+        logger.debug("Deleting jobs older than {}", cutoffDate);
+        return repository.deleteByCreatedAtBefore(cutoffDate)
+                .map(Integer::longValue)
+                .doOnSuccess(count -> logger.info("Deleted {} old jobs", count));
+    }
+
+    /**
+     * Get jobs by connector config ordered by created date desc
+     */
+    public Flux<IngestionJob> findByConnectorConfigIdOrderByCreatedAtDesc(UUID connectorConfigId) {
+        return repository.findByConnectorConfigIdOrderByCreatedAtDesc(connectorConfigId);
+    }
+
+    /**
+     * Find first job by connector config and status ordered by created date desc
+     */
+    public Mono<IngestionJob> findFirstByConnectorConfigIdAndStatusOrderByCreatedAtDesc(UUID connectorConfigId, String status) {
+        return repository.findFirstByConnectorConfigIdAndStatusOrderByCreatedAtDesc(connectorConfigId, status);
+    }
+
+    /**
+     * Count recent jobs by connector and status
+     */
+    public Mono<Long> countRecentJobsByConnectorAndStatus(UUID connectorConfigId, String status, LocalDateTime since) {
+        return repository.countByConnectorConfigIdAndStatusAndCreatedAtAfter(connectorConfigId, status, since);
+    }
+
+    /**
+     * Get job statistics for monitoring
+     */
+    public Mono<JobStatistics> getJobStatistics() {
+        return Mono.zip(
+                repository.countByStatus("RUNNING"),
+                repository.countByStatus("COMPLETED"),
+                repository.countByStatus("FAILED"),
+                repository.count()
+        ).map(tuple -> new JobStatistics(
+                tuple.getT1(),
+                tuple.getT2(), 
+                tuple.getT3(),
+                tuple.getT4()
+        ));
+    }
+
+    /**
+     * Simple statistics holder
+     */
+    public record JobStatistics(Long running, Long completed, Long failed, Long total) {}
 }

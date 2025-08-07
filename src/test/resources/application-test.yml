@@ -1,0 +1,84 @@
+# Test configuration for Knowledge Ingestion Service
+spring:
+  profiles:
+    active: test
+    
+  # In-memory H2 database for tests
+  r2dbc:
+    url: r2dbc:h2:mem:///testdb;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+    
+  # Disable Flyway for tests (use schema initialization instead)
+  flyway:
+    enabled: false
+    
+  # Test data initialization
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema-test.sql
+      data-locations: classpath:data-test.sql
+      
+# Test-specific ingestion settings
+ingestion:
+  encryption:
+    secret-key: dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcw==  # Base64 encoded test key
+    
+  jobs:
+    max-concurrent-jobs: 3
+    cleanup-interval-hours: 1
+    retention-days: 7
+    
+  scheduling:
+    enabled: false  # Disable scheduling in tests
+    fixed-delay: 60000
+    initial-delay: 10000
+    
+  connectors:
+    github:
+      rate-limit-requests-per-hour: 100
+      request-timeout-seconds: 30
+    jira:
+      rate-limit-requests-per-minute: 10
+      request-timeout-seconds: 45
+      
+# Logging configuration for tests
+logging:
+  level:
+    com.openrangelabs.donpetre.ingestion: DEBUG
+    org.springframework.r2dbc: DEBUG
+    reactor: WARN
+    org.springframework.security: WARN
+    
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    
+# Management endpoints for testing
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      
+# Security settings for tests (more permissive)
+security:
+  test-mode: true
+  
+# Test data source properties
+test:
+  data:
+    cleanup-after-test: true
+    seed-test-data: true
+    
+# Mock external service configurations
+mock:
+  github:
+    api-url: http://localhost:8089/github
+    enabled: true
+  jira:
+    api-url: http://localhost:8089/jira  
+    enabled: true

@@ -124,6 +124,61 @@ public interface ApiCredentialRepository extends R2dbcRepository<ApiCredential, 
     Flux<CredentialStats> getCredentialStats();
 
     /**
+     * Check if credential exists by connector ID and credential name
+     */
+    @Query("""
+        SELECT CASE WHEN COUNT(*) > 0 THEN true ELSE false END 
+        FROM api_credentials 
+        WHERE connector_config_id = :connectorId 
+        AND credential_type = :credentialName 
+        AND is_active = true
+        """)
+    Mono<Boolean> existsByConnectorIdAndCredentialName(
+            @Param("connectorId") UUID connectorId,
+            @Param("credentialName") String credentialName);
+
+    /**
+     * Find credential by connector ID and credential name
+     */
+    @Query("""
+        SELECT * FROM api_credentials 
+        WHERE connector_config_id = :connectorId 
+        AND credential_type = :credentialName 
+        AND is_active = true
+        """)
+    Mono<ApiCredential> findByConnectorIdAndCredentialName(
+            @Param("connectorId") UUID connectorId,
+            @Param("credentialName") String credentialName);
+
+    /**
+     * Delete all credentials for a connector
+     */
+    @Query("DELETE FROM api_credentials WHERE connector_config_id = :connectorId")
+    Mono<Long> deleteByConnectorId(@Param("connectorId") UUID connectorId);
+
+    /**
+     * Find credential usage statistics for a connector
+     */
+    @Query("""
+        SELECT 
+            credential_type as credentialName,
+            last_used as lastUsed
+        FROM api_credentials 
+        WHERE connector_config_id = :connectorId 
+        AND is_active = true
+        ORDER BY last_used DESC
+        """)
+    Flux<CredentialUsageResult> findCredentialUsage(@Param("connectorId") UUID connectorId);
+
+    /**
+     * Interface for credential usage results
+     */
+    interface CredentialUsageResult {
+        String getCredentialName();
+        LocalDateTime getLastUsed();
+    }
+
+    /**
      * Interface for credential statistics
      */
     interface CredentialStats {

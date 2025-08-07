@@ -89,6 +89,60 @@ public interface ConnectorConfigRepository extends R2dbcRepository<ConnectorConf
     Mono<Integer> updateEnabledStatus(@Param("id") UUID id, @Param("enabled") boolean enabled);
 
     /**
+     * Find enabled configurations that are scheduled for sync
+     */
+    @Query("""
+        SELECT * FROM connector_configs 
+        WHERE enabled = true 
+        AND (last_sync_time IS NULL OR last_sync_time < NOW() - INTERVAL '1 HOUR')
+        ORDER BY COALESCE(last_sync_time, created_at) ASC
+        """)
+    Flux<ConnectorConfig> findEnabledConfigurationsForScheduledSync();
+
+    /**
+     * Find enabled configurations by type for scheduled sync
+     */
+    @Query("""
+        SELECT * FROM connector_configs 
+        WHERE connector_type = :connectorType 
+        AND enabled = true 
+        AND (last_sync_time IS NULL OR last_sync_time < NOW() - INTERVAL '1 HOUR')
+        ORDER BY COALESCE(last_sync_time, created_at) ASC
+        """)
+    Flux<ConnectorConfig> findEnabledByConnectorTypeForScheduledSync(@Param("connectorType") String connectorType);
+
+    /**
+     * Find configurations that are due for sync based on their schedule
+     */
+    @Query("""
+        SELECT * FROM connector_configs 
+        WHERE enabled = true 
+        AND (
+            last_sync_time IS NULL 
+            OR last_sync_time < :now - INTERVAL '1 HOUR'
+        )
+        ORDER BY COALESCE(last_sync_time, created_at) ASC
+        """)
+    Flux<ConnectorConfig> findConfigurationsDueForSync(@Param("now") LocalDateTime now);
+
+    /**
+     * Update last sync time for a configuration
+     */
+    @Query("UPDATE connector_configs SET last_sync_time = :lastSyncTime, updated_at = NOW() WHERE id = :id")
+    Mono<Integer> updateLastSyncTime(@Param("id") UUID id, @Param("lastSyncTime") LocalDateTime lastSyncTime);
+
+    /**
+     * Find configurations with failed last sync
+     */
+    @Query("""
+        SELECT * FROM connector_configs 
+        WHERE enabled = true 
+        AND consecutive_error_count > 0
+        ORDER BY last_sync_time DESC
+        """)
+    Flux<ConnectorConfig> findFailedConfigurations();
+
+    /**
      * Interface for connector type statistics
      */
     interface ConnectorTypeStats {

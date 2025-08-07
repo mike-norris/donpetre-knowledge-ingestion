@@ -38,6 +38,9 @@ public class IngestionScheduler {
     @Value("${ingestion.jobs.credential-check.expiration-warning-days:7}")
     private int expirationWarningDays;
 
+    @Value("${ingestion.scheduling.enabled:true}")
+    private boolean scheduledSyncEnabled;
+
     @Autowired
     public IngestionScheduler(
             IngestionOrchestrationService orchestrationService,
@@ -56,9 +59,45 @@ public class IngestionScheduler {
      */
     @Scheduled(fixedDelay = 300000) // 5 minutes
     public void scheduledIngestion() {
+        if (!scheduledSyncEnabled) {
+            logger.debug("Scheduled ingestion is disabled");
+            return;
+        }
+
         logger.debug("Starting scheduled ingestion check");
 
-        configService.getEnabledConfigurations()
+        configService.findConfigurationsForScheduledSync()
+                .flatMap(config ->
+                        orchestrationService.shouldRunScheduledSync(config)
+                                .filter(shouldRun -> shouldRun)
+                                .flatMap(shouldRun ->
+                                        orchestrationService.scheduleIncrementalSync(config)
+                                                .doOnSuccess(result -> logger.info("Scheduled sync for connector: {} - {}",
+                                                        config.getConnectorType(), config.getName()))
+                                                .doOnError(error -> logger.error("Failed to schedule sync for connector: {} - {}",
+                                                        config.getConnectorType(), config.getName(), error))
+                                                .onErrorResume(error -> Mono.empty())
+                                )
+                )
+                .collectList()
+                .subscribe(
+                        results -> logger.debug("Completed scheduled ingestion check: {} connectors processed", results.size()),
+                        error -> logger.error("Error during scheduled ingestion: {}", error.getMessage())
+                );
+    }
+
+    /**
+     * Run scheduled ingestion (called by test)
+     */
+    public void runScheduledIngestion() {
+        if (!scheduledSyncEnabled) {
+            logger.debug("Scheduled sync is disabled");
+            return;
+        }
+
+        logger.debug("Running scheduled ingestion check");
+
+        configService.findConfigurationsForScheduledSync()
                 .flatMap(config ->
                         orchestrationService.shouldRunScheduledSync(config)
                                 .filter(shouldRun -> shouldRun)
@@ -124,5 +163,63 @@ public class IngestionScheduler {
                         },
                         error -> logger.error("Error checking expiring credentials: {}", error.getMessage())
                 );
+    }
+
+    /**
+     * Run health check for the scheduler
+     */
+    public void runHealthCheck() {
+        logger.debug("Running scheduler health check");
+        
+        // Check if services are available
+        try {
+            configService.getTotalConfigurationCount()
+                    .doOnSuccess(count -> logger.debug("Health check: Found {} configurations", count))
+                    .doOnError(error -> logger.error("Health check failed: {}", error.getMessage()))
+                    .subscribe();
+                    
+            jobService.getJobStatistics()
+                    .doOnSuccess(stats -> logger.debug("Health check: Job statistics - Total: {}, Running: {}", 
+                            stats.total(), stats.running()))
+                    .doOnError(error -> logger.error("Health check job statistics failed: {}", error.getMessage()))
+                    .subscribe();
+                    
+            logger.info("Scheduler health check completed successfully");
+        } catch (Exception e) {
+            logger.error("Scheduler health check failed with exception: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Run maintenance tasks
+     */
+    public void runMaintenanceTasks() {
+        logger.info("Running scheduler maintenance tasks");
+        
+        try {
+            // Clean up old jobs if enabled
+            if (cleanupEnabled) {
+                jobService.cleanupOldJobs(retentionDays)
+                        .doOnSuccess(count -> logger.info("Maintenance: Cleaned up {} old jobs", count))
+                        .doOnError(error -> logger.error("Maintenance job cleanup failed: {}", error.getMessage()))
+                        .subscribe();
+            }
+            
+            // Check for expired credentials
+            credentialService.getExpiredCredentials()
+                    .collectList()
+                    .doOnSuccess(expiredCreds -> {
+                        if (!expiredCreds.isEmpty()) {
+                            logger.warn("Maintenance: Found {} expired credentials", expiredCreds.size());
+                            // Could add logic to deactivate expired credentials
+                        }
+                    })
+                    .doOnError(error -> logger.error("Maintenance expired credentials check failed: {}", error.getMessage()))
+                    .subscribe();
+                    
+            logger.info("Scheduler maintenance tasks completed successfully");
+        } catch (Exception e) {
+            logger.error("Scheduler maintenance tasks failed with exception: {}", e.getMessage(), e);
+        }
     }
 }

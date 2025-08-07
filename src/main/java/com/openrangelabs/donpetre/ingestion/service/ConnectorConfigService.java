@@ -158,4 +158,96 @@ public class ConnectorConfigService {
     public Flux<ConnectorConfig> getConfigurationsUpdatedSince(LocalDateTime since) {
         return repository.findUpdatedSince(since);
     }
+
+    /**
+     * Find configurations that are enabled and scheduled for sync
+     */
+    public Flux<ConnectorConfig> findConfigurationsForScheduledSync() {
+        logger.debug("Finding configurations for scheduled sync");
+        return repository.findEnabledConfigurationsForScheduledSync();
+    }
+
+    /**
+     * Find scheduled configurations by connector type
+     */
+    public Flux<ConnectorConfig> findScheduledConfigurations(String connectorType) {
+        logger.debug("Finding scheduled configurations for connector type: {}", connectorType);
+        if (connectorType != null) {
+            return repository.findEnabledByConnectorTypeForScheduledSync(connectorType);
+        }
+        return findConfigurationsForScheduledSync();
+    }
+
+    /**
+     * Update the last sync time for a configuration
+     */
+    public Mono<ConnectorConfig> updateLastSyncTime(UUID configId, LocalDateTime lastSyncTime) {
+        logger.debug("Updating last sync time for config: {} to {}", configId, lastSyncTime);
+        return repository.findById(configId)
+                .flatMap(config -> {
+                    config.setLastSyncTime(lastSyncTime);
+                    return repository.save(config);
+                })
+                .doOnSuccess(config -> logger.debug("Updated last sync time for config: {}", configId));
+    }
+
+    /**
+     * Get configurations that need sync based on schedule
+     */
+    public Flux<ConnectorConfig> getConfigurationsDueForSync() {
+        logger.debug("Finding configurations due for sync");
+        LocalDateTime now = LocalDateTime.now();
+        return repository.findConfigurationsDueForSync(now);
+    }
+
+    /**
+     * Validate configuration against connector-specific rules
+     */
+    public Mono<Boolean> validateConfiguration(String connectorType, JsonNode configuration) {
+        logger.debug("Validating configuration for connector type: {}", connectorType);
+        
+        if (configuration == null || configuration.isEmpty()) {
+            return Mono.just(false);
+        }
+
+        // Validate based on connector type
+        return switch (connectorType.toLowerCase()) {
+            case "github" -> validateGitHubConfiguration(configuration);
+            case "jira" -> validateJiraConfiguration(configuration);
+            case "gitlab" -> validateGitLabConfiguration(configuration);
+            default -> Mono.just(true); // Basic validation passed
+        };
+    }
+
+    /**
+     * Get configuration count by type
+     */
+    public Mono<Long> getConfigurationCountByType(String connectorType) {
+        return repository.countByConnectorType(connectorType);
+    }
+
+    /**
+     * Get total configuration count
+     */
+    public Mono<Long> getTotalConfigurationCount() {
+        return repository.count();
+    }
+
+    private Mono<Boolean> validateGitHubConfiguration(JsonNode config) {
+        boolean hasBaseUrl = config.has("base_url") && !config.get("base_url").asText().trim().isEmpty();
+        boolean hasOrganization = config.has("organization") && !config.get("organization").asText().trim().isEmpty();
+        return Mono.just(hasBaseUrl && hasOrganization);
+    }
+
+    private Mono<Boolean> validateJiraConfiguration(JsonNode config) {
+        boolean hasBaseUrl = config.has("base_url") && !config.get("base_url").asText().trim().isEmpty();
+        boolean hasProject = config.has("project") && !config.get("project").asText().trim().isEmpty();
+        return Mono.just(hasBaseUrl && hasProject);
+    }
+
+    private Mono<Boolean> validateGitLabConfiguration(JsonNode config) {
+        boolean hasBaseUrl = config.has("base_url") && !config.get("base_url").asText().trim().isEmpty();
+        boolean hasGroup = config.has("group") && !config.get("group").asText().trim().isEmpty();
+        return Mono.just(hasBaseUrl && hasGroup);
+    }
 }
