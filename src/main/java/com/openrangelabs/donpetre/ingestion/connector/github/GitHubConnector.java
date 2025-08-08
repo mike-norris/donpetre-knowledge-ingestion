@@ -141,7 +141,9 @@ public class GitHubConnector extends AbstractDataConnector {
                         log.error("GitHub connection test failed", e);
                         return false;
                     }
-                }));
+                }))
+                .onErrorReturn(false)
+                .switchIfEmpty(Mono.just(false));
     }
 
     @Override

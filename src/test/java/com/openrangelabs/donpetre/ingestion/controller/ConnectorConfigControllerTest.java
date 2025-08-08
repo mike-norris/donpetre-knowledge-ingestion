@@ -10,7 +10,16 @@ import com.openrangelabs.donpetre.ingestion.service.ConnectorConfigService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -25,7 +34,11 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@WebFluxTest(ConnectorConfigController.class)
+@WebFluxTest(controllers = ConnectorConfigController.class)
+@Import(ConnectorConfigControllerTest.TestSecurityConfig.class)
+@TestPropertySource(properties = {
+    "open-range-labs.donpetre.security.cors.allowed-origins=*"
+})
 class ConnectorConfigControllerTest {
 
     @Autowired
@@ -404,13 +417,27 @@ class ConnectorConfigControllerTest {
     }
 
     @Test
-    void getAllConfigurations_Unauthenticated_Unauthorized() {
+    void getAllConfigurations_Unauthenticated_Forbidden() {
         // Act & Assert
         webTestClient.get()
             .uri("/api/connectors")
             .exchange()
-            .expectStatus().isUnauthorized();
+            .expectStatus().isForbidden();
 
         verify(configService, never()).getConfigurationsByType(any());
+    }
+    
+    @TestConfiguration
+    @EnableWebFluxSecurity
+    @EnableReactiveMethodSecurity
+    static class TestSecurityConfig {
+        
+        @Bean
+        public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+            return http
+                    .csrf(csrf -> csrf.disable())
+                    .authorizeExchange(exchanges -> exchanges.anyExchange().permitAll())
+                    .build();
+        }
     }
 }

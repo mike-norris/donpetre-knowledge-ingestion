@@ -27,6 +27,9 @@ public class IngestionJob {
 
     private String status = JobStatus.PENDING.name();
 
+    @Column("created_at")
+    private LocalDateTime createdAt;
+
     @Column("started_at")
     private LocalDateTime startedAt;
 
@@ -53,11 +56,13 @@ public class IngestionJob {
     public IngestionJob(UUID connectorConfigId, String jobType) {
         this.connectorConfigId = connectorConfigId;
         this.jobType = jobType;
+        this.createdAt = LocalDateTime.now();
     }
 
     public IngestionJob(UUID connectorConfigId, JobType jobType) {
         this.connectorConfigId = connectorConfigId;
         this.jobType = jobType.name().toLowerCase();
+        this.createdAt = LocalDateTime.now();
     }
 
     // Business methods
@@ -173,6 +178,9 @@ public class IngestionJob {
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 
     public LocalDateTime getStartedAt() { return startedAt; }
     public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }

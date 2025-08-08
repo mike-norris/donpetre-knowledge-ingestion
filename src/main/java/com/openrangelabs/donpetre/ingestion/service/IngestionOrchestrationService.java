@@ -100,7 +100,7 @@ public class IngestionOrchestrationService {
                     return checkConcurrentJobsLimit()
                             .then(jobService.getLatestSuccessfulJob(config.getId()))
                             .map(job -> job.getLastSyncCursor())
-                            .defaultIfEmpty(null)
+                            .defaultIfEmpty("")
                             .flatMap(lastCursor -> connector.performIncrementalSync(config, lastCursor))
                             .doOnSuccess(result ->
                                     lastSyncTimes.put(getConfigKey(config), LocalDateTime.now()))

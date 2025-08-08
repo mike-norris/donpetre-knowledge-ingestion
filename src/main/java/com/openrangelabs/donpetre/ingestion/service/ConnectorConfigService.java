@@ -107,6 +107,9 @@ public class ConnectorConfigService {
      * Get all configurations by type
      */
     public Flux<ConnectorConfig> getConfigurationsByType(String connectorType) {
+        if (connectorType == null) {
+            return repository.findAll();
+        }
         return repository.findByConnectorType(connectorType);
     }
 

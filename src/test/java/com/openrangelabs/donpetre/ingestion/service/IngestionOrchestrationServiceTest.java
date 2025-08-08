@@ -197,7 +197,7 @@ class IngestionOrchestrationServiceTest {
         when(jobService.getRunningJobs()).thenReturn(Flux.empty());
         when(jobService.getLatestSuccessfulJob(testConfig.getId()))
             .thenReturn(Mono.empty());
-        when(mockConnector.performIncrementalSync(testConfig, null))
+        when(mockConnector.performIncrementalSync(testConfig, ""))
             .thenReturn(Mono.just(expectedResult));
 
         // Act & Assert
@@ -205,7 +205,7 @@ class IngestionOrchestrationServiceTest {
             .expectNext(expectedResult)
             .verifyComplete();
 
-        verify(mockConnector).performIncrementalSync(testConfig, null);
+        verify(mockConnector).performIncrementalSync(testConfig, "");
     }
 
     @Test
@@ -278,8 +278,8 @@ class IngestionOrchestrationServiceTest {
     @Test
     void getConnectorMetrics_Success() {
         // Arrange
-        ConnectorMetrics metrics = new ConnectorMetrics();
-        RateLimitStatus rateLimit = new RateLimitStatus();
+        ConnectorMetrics metrics = new ConnectorMetrics("github", 100L, 5L, LocalDateTime.now());
+        RateLimitStatus rateLimit = new RateLimitStatus(5000, 4500, LocalDateTime.now().plusHours(1), "github");
         List<IngestionJob> recentJobs = List.of(new IngestionJob());
 
         when(configService.getConfiguration("github", "test-config"))
@@ -312,7 +312,7 @@ class IngestionOrchestrationServiceTest {
         when(jobService.getRunningJobs()).thenReturn(Flux.empty());
         when(jobService.getLatestSuccessfulJob(testConfig.getId()))
             .thenReturn(Mono.empty());
-        when(mockConnector.performIncrementalSync(testConfig, null))
+        when(mockConnector.performIncrementalSync(testConfig, ""))
             .thenReturn(Mono.just(expectedResult));
 
         // Act & Assert

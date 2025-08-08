@@ -27,12 +27,15 @@ class ConnectorConfigServiceTest {
     @Mock
     private ConnectorConfigRepository repository;
 
+    @Mock
+    private CredentialService credentialService;
+
     private ConnectorConfigService configService;
     private ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        configService = new ConnectorConfigService(repository);
+        configService = new ConnectorConfigService(repository, credentialService);
     }
 
     @Test
@@ -92,7 +95,7 @@ class ConnectorConfigServiceTest {
         StepVerifier.create(configService.createConfiguration(connectorType, name, configuration, createdBy))
             .expectErrorMatches(throwable -> 
                 throwable instanceof IllegalArgumentException &&
-                throwable.getMessage().contains("Configuration already exists"))
+                throwable.getMessage().contains("already exists"))
             .verify();
 
         verify(repository, never()).save(any());
@@ -185,7 +188,7 @@ class ConnectorConfigServiceTest {
         ConnectorConfig enabledConfig2 = new ConnectorConfig();
         enabledConfig2.setEnabled(true);
 
-        when(repository.findByEnabled(true))
+        when(repository.findAllEnabled())
             .thenReturn(Flux.just(enabledConfig1, enabledConfig2));
 
         // Act & Assert
@@ -240,7 +243,10 @@ class ConnectorConfigServiceTest {
 
         // Act & Assert
         StepVerifier.create(configService.updateConfiguration(id, newConfiguration))
-            .verifyComplete();
+            .expectErrorMatches(throwable -> 
+                throwable instanceof IllegalArgumentException &&
+                throwable.getMessage().contains("Configuration not found"))
+            .verify();
 
         verify(repository, never()).save(any());
     }
@@ -260,24 +266,28 @@ class ConnectorConfigServiceTest {
         updatedConfig.setEnabled(enabled);
         updatedConfig.setUpdatedAt(LocalDateTime.now());
 
-        when(repository.findById(id)).thenReturn(Mono.just(existingConfig));
-        when(repository.save(any(ConnectorConfig.class))).thenReturn(Mono.just(updatedConfig));
+        when(repository.updateEnabledStatus(id, enabled)).thenReturn(Mono.just(1));
+        when(repository.findById(id)).thenReturn(Mono.just(updatedConfig));
 
         // Act & Assert
         StepVerifier.create(configService.setEnabled(id, enabled))
             .expectNext(updatedConfig)
             .verifyComplete();
 
-        verify(repository).save(argThat(config -> 
-            !config.getEnabled() &&
-            config.getUpdatedAt() != null
-        ));
+        verify(repository).updateEnabledStatus(id, enabled);
     }
 
     @Test
     void deleteConfiguration_Success() {
         // Arrange
         UUID id = UUID.randomUUID();
+        ConnectorConfig config = new ConnectorConfig();
+        config.setId(id);
+        config.setConnectorType("github");
+        config.setName("test-config");
+        
+        when(repository.findById(id)).thenReturn(Mono.just(config));
+        when(credentialService.deactivateAllCredentials(id)).thenReturn(Mono.empty());
         when(repository.deleteById(id)).thenReturn(Mono.empty());
 
         // Act & Assert
@@ -285,6 +295,7 @@ class ConnectorConfigServiceTest {
             .verifyComplete();
 
         verify(repository).deleteById(id);
+        verify(credentialService).deactivateAllCredentials(id);
     }
 
     @Test
@@ -292,8 +303,22 @@ class ConnectorConfigServiceTest {
         // Arrange
         when(repository.getConnectorTypeStats())
             .thenReturn(Flux.just(
-                new ConnectorConfigService.ConnectorTypeStats("github", 5L, 3L),
-                new ConnectorConfigService.ConnectorTypeStats("jira", 2L, 1L)
+                new ConnectorConfigRepository.ConnectorTypeStats() {
+                    @Override
+                    public String getConnectorType() { return "github"; }
+                    @Override
+                    public Long getTotalCount() { return 5L; }
+                    @Override
+                    public Long getEnabledCount() { return 3L; }
+                },
+                new ConnectorConfigRepository.ConnectorTypeStats() {
+                    @Override
+                    public String getConnectorType() { return "jira"; }
+                    @Override
+                    public Long getTotalCount() { return 2L; }
+                    @Override
+                    public Long getEnabledCount() { return 1L; }
+                }
             ));
 
         // Act & Assert
@@ -344,7 +369,7 @@ class ConnectorConfigServiceTest {
         ConnectorConfig scheduledConfig1 = new ConnectorConfig();
         ConnectorConfig scheduledConfig2 = new ConnectorConfig();
 
-        when(repository.findScheduledConfigurations())
+        when(repository.findEnabledConfigurationsForScheduledSync())
             .thenReturn(Flux.just(scheduledConfig1, scheduledConfig2));
 
         // Act & Assert
@@ -365,7 +390,7 @@ class ConnectorConfigServiceTest {
 
         ConnectorConfig updatedConfig = new ConnectorConfig();
         updatedConfig.setId(id);
-        updatedConfig.setLastSyncAt(lastSyncTime);
+        updatedConfig.setLastSyncTime(lastSyncTime);
 
         when(repository.findById(id)).thenReturn(Mono.just(existingConfig));
         when(repository.save(any(ConnectorConfig.class))).thenReturn(Mono.just(updatedConfig));
@@ -376,7 +401,7 @@ class ConnectorConfigServiceTest {
             .verifyComplete();
 
         verify(repository).save(argThat(config -> 
-            config.getLastSyncAt().equals(lastSyncTime)
+            config.getLastSyncTime().equals(lastSyncTime)
         ));
     }
 }

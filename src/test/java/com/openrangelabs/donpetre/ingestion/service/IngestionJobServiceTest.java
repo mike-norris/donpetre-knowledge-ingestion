@@ -40,7 +40,7 @@ class IngestionJobServiceTest {
         
         IngestionJob savedJob = new IngestionJob(connectorConfigId, jobType);
         savedJob.setId(UUID.randomUUID());
-        savedJob.setCreatedAt(LocalDateTime.now());
+        savedJob.setStartedAt(LocalDateTime.now());
         savedJob.setStatus("PENDING");
 
         when(repository.save(any(IngestionJob.class))).thenReturn(Mono.just(savedJob));
@@ -109,7 +109,7 @@ class IngestionJobServiceTest {
         IngestionJob job1 = new IngestionJob();
         IngestionJob job2 = new IngestionJob();
         
-        when(repository.findByConnectorConfigIdOrderByCreatedAtDesc(connectorConfigId))
+        when(repository.findByConnectorConfigIdOrderByStartedAtDesc(connectorConfigId))
             .thenReturn(Flux.just(job1, job2));
 
         // Act & Assert
@@ -127,8 +127,7 @@ class IngestionJobServiceTest {
         successfulJob.setStatus("COMPLETED");
         successfulJob.setLastSyncCursor("cursor123");
 
-        when(repository.findFirstByConnectorConfigIdAndStatusOrderByCreatedAtDesc(
-            connectorConfigId, "COMPLETED"))
+        when(repository.findLatestSuccessfulByConnectorConfigId(connectorConfigId))
             .thenReturn(Mono.just(successfulJob));
 
         // Act & Assert
@@ -141,8 +140,7 @@ class IngestionJobServiceTest {
     void getLatestSuccessfulJob_NotFound() {
         // Arrange
         UUID connectorConfigId = UUID.randomUUID();
-        when(repository.findFirstByConnectorConfigIdAndStatusOrderByCreatedAtDesc(
-            connectorConfigId, "COMPLETED"))
+        when(repository.findLatestSuccessfulByConnectorConfigId(connectorConfigId))
             .thenReturn(Mono.empty());
 
         // Act & Assert
@@ -158,7 +156,7 @@ class IngestionJobServiceTest {
         IngestionJob runningJob2 = new IngestionJob();
         runningJob2.setStatus("RUNNING");
 
-        when(repository.findByStatus("RUNNING"))
+        when(repository.findRunningJobs())
             .thenReturn(Flux.just(runningJob1, runningJob2));
 
         // Act & Assert
@@ -226,8 +224,8 @@ class IngestionJobServiceTest {
         IngestionJob completedJob = new IngestionJob();
         completedJob.setId(jobId);
         completedJob.setStatus("COMPLETED");
-        completedJob.setProcessedItems(processedItems);
-        completedJob.setFailedItems(failedItems);
+        completedJob.setItemsProcessed(processedItems);
+        completedJob.setItemsFailed(failedItems);
         completedJob.setLastSyncCursor(nextCursor);
         completedJob.setCompletedAt(LocalDateTime.now());
 
@@ -241,8 +239,8 @@ class IngestionJobServiceTest {
 
         verify(repository).save(argThat(job -> 
             job.getStatus().equals("COMPLETED") && 
-            job.getProcessedItems() == processedItems &&
-            job.getFailedItems() == failedItems &&
+            job.getItemsProcessed() == processedItems &&
+            job.getItemsFailed() == failedItems &&
             job.getLastSyncCursor().equals(nextCursor) &&
             job.getCompletedAt() != null
         ));
@@ -283,7 +281,7 @@ class IngestionJobServiceTest {
     void deleteOldJobs_Success() {
         // Arrange
         LocalDateTime cutoffDate = LocalDateTime.now().minusDays(30);
-        when(repository.deleteByCreatedAtBefore(cutoffDate)).thenReturn(Mono.just(10L));
+        when(repository.deleteByCreatedAtBefore(cutoffDate)).thenReturn(Mono.just(10));
 
         // Act & Assert
         StepVerifier.create(jobService.deleteOldJobs(cutoffDate))
@@ -296,25 +294,22 @@ class IngestionJobServiceTest {
     @Test
     void getJobStatistics_Success() {
         // Arrange
-        UUID connectorConfigId = UUID.randomUUID();
-        LocalDateTime since = LocalDateTime.now().minusDays(7);
-
-        when(repository.countByConnectorConfigIdAndStatusAndCreatedAtAfter(
-            connectorConfigId, "COMPLETED", since))
-            .thenReturn(Mono.just(15L));
-        when(repository.countByConnectorConfigIdAndStatusAndCreatedAtAfter(
-            connectorConfigId, "FAILED", since))
-            .thenReturn(Mono.just(2L));
-        when(repository.countByConnectorConfigIdAndStatusAndCreatedAtAfter(
-            connectorConfigId, "RUNNING", since))
+        when(repository.countByStatus("RUNNING"))
             .thenReturn(Mono.just(1L));
+        when(repository.countByStatus("COMPLETED"))
+            .thenReturn(Mono.just(15L));
+        when(repository.countByStatus("FAILED"))
+            .thenReturn(Mono.just(2L));
+        when(repository.count())
+            .thenReturn(Mono.just(18L));
 
         // Act & Assert
-        StepVerifier.create(jobService.getJobStatistics(connectorConfigId, since))
+        StepVerifier.create(jobService.getJobStatistics())
             .expectNextMatches(stats -> {
-                assertThat(stats.get("completed")).isEqualTo(15L);
-                assertThat(stats.get("failed")).isEqualTo(2L);
-                assertThat(stats.get("running")).isEqualTo(1L);
+                assertThat(stats.running()).isEqualTo(1L);
+                assertThat(stats.completed()).isEqualTo(15L);
+                assertThat(stats.failed()).isEqualTo(2L);
+                assertThat(stats.total()).isEqualTo(18L);
                 return true;
             })
             .verifyComplete();

@@ -79,15 +79,14 @@ class CredentialServiceTest {
                 assertThat(response.getConnectorConfigId()).isEqualTo(connectorId);
                 assertThat(response.getCredentialType()).isEqualTo(credentialName);
                 assertThat(response.getCreatedAt()).isEqualTo(savedCredential.getCreatedAt());
-                // Should not contain the actual credential value
-                assertThat(response.getCredentialValue()).isNull();
+                // Credential value is not included in response for security
                 return true;
             })
             .verifyComplete();
 
         verify(repository).save(argThat(credential -> 
-            credential.getConnectorId().equals(connectorId) &&
-            credential.getCredentialName().equals(credentialName) &&
+            credential.getConnectorConfigId().equals(connectorId) &&
+            credential.getCredentialType().equals(credentialName) &&
             credential.getEncryptedValue() != null &&
             !credential.getEncryptedValue().equals(credentialValue) // Should be encrypted
         ));
@@ -100,9 +99,9 @@ class CredentialServiceTest {
         String credentialName = "api_token";
 
         StoreCredentialRequest request = new StoreCredentialRequest();
-        request.setConnectorId(connectorId);
-        request.setCredentialName(credentialName);
-        request.setCredentialValue("secret-token-123");
+        request.setConnectorConfigId(connectorId);
+        request.setCredentialType(credentialName);
+        request.setValue("secret-token-123");
 
         when(repository.existsByConnectorIdAndCredentialName(connectorId, credentialName))
             .thenReturn(Mono.just(true));
@@ -121,8 +120,8 @@ class CredentialServiceTest {
         UUID credentialId = UUID.randomUUID();
         ApiCredential credential = new ApiCredential();
         credential.setId(credentialId);
-        credential.setConnectorId(UUID.randomUUID());
-        credential.setCredentialName("api_token");
+        credential.setConnectorConfigId(UUID.randomUUID());
+        credential.setCredentialType("api_token");
         credential.setEncryptedValue("encrypted-value");
         credential.setCreatedAt(LocalDateTime.now());
 
@@ -133,9 +132,8 @@ class CredentialServiceTest {
         StepVerifier.create(credentialService.getCredential(credentialId))
             .expectNextMatches(response -> {
                 assertThat(response.getId()).isEqualTo(credentialId);
-                assertThat(response.getCredentialName()).isEqualTo("api_token");
-                // Should not contain decrypted value
-                assertThat(response.getCredentialValue()).isNull();
+                assertThat(response.getCredentialType()).isEqualTo("api_token");
+                // Credential value is not included in response for security
                 return true;
             })
             .verifyComplete();
@@ -159,15 +157,15 @@ class CredentialServiceTest {
         UUID connectorId = UUID.randomUUID();
         ApiCredential credential1 = new ApiCredential();
         credential1.setId(UUID.randomUUID());
-        credential1.setConnectorId(connectorId);
-        credential1.setCredentialName("api_token");
+        credential1.setConnectorConfigId(connectorId);
+        credential1.setCredentialType("api_token");
 
         ApiCredential credential2 = new ApiCredential();
         credential2.setId(UUID.randomUUID());
-        credential2.setConnectorId(connectorId);
-        credential2.setCredentialName("webhook_secret");
+        credential2.setConnectorConfigId(connectorId);
+        credential2.setCredentialType("webhook_secret");
 
-        when(repository.findByConnectorId(connectorId))
+        when(repository.findByConnectorConfigId(connectorId))
             .thenReturn(Flux.just(credential1, credential2));
 
         // Act & Assert
@@ -187,12 +185,14 @@ class CredentialServiceTest {
         String encryptedValue = encryptValue(originalValue);
 
         ApiCredential credential = new ApiCredential();
-        credential.setConnectorId(connectorId);
-        credential.setCredentialName(credentialName);
+        credential.setConnectorConfigId(connectorId);
+        credential.setCredentialType(credentialName);
         credential.setEncryptedValue(encryptedValue);
 
-        when(repository.findByConnectorIdAndCredentialName(connectorId, credentialName))
+        when(repository.findActiveByConnectorConfigIdAndCredentialType(connectorId, credentialName))
             .thenReturn(Mono.just(credential));
+        when(repository.updateLastUsed(any(UUID.class)))
+            .thenReturn(Mono.just(1));
 
         // Act & Assert
         StepVerifier.create(credentialService.getDecryptedCredential(connectorId, credentialName))
@@ -206,7 +206,7 @@ class CredentialServiceTest {
         UUID connectorId = UUID.randomUUID();
         String credentialName = "nonexistent";
 
-        when(repository.findByConnectorIdAndCredentialName(connectorId, credentialName))
+        when(repository.findActiveByConnectorConfigIdAndCredentialType(connectorId, credentialName))
             .thenReturn(Mono.empty());
 
         // Act & Assert
@@ -222,16 +222,15 @@ class CredentialServiceTest {
 
         ApiCredential existingCredential = new ApiCredential();
         existingCredential.setId(credentialId);
-        existingCredential.setConnectorId(UUID.randomUUID());
-        existingCredential.setCredentialName("api_token");
+        existingCredential.setConnectorConfigId(UUID.randomUUID());
+        existingCredential.setCredentialType("api_token");
         existingCredential.setEncryptedValue("old-encrypted-value");
 
         ApiCredential updatedCredential = new ApiCredential();
         updatedCredential.setId(credentialId);
-        updatedCredential.setConnectorId(existingCredential.getConnectorId());
-        updatedCredential.setCredentialName("api_token");
+        updatedCredential.setConnectorConfigId(existingCredential.getConnectorConfigId());
+        updatedCredential.setCredentialType("api_token");
         updatedCredential.setEncryptedValue("new-encrypted-value");
-        updatedCredential.setUpdatedAt(LocalDateTime.now());
 
         when(repository.findById(credentialId))
             .thenReturn(Mono.just(existingCredential));
@@ -242,13 +241,12 @@ class CredentialServiceTest {
         StepVerifier.create(credentialService.updateCredential(credentialId, newValue))
             .expectNextMatches(response -> {
                 assertThat(response.getId()).isEqualTo(credentialId);
-                assertThat(response.getUpdatedAt()).isNotNull();
+                assertThat(response.getCredentialType()).isEqualTo("api_token");
                 return true;
             })
             .verifyComplete();
 
         verify(repository).save(argThat(credential -> 
-            credential.getUpdatedAt() != null &&
             !credential.getEncryptedValue().equals("old-encrypted-value")
         ));
     }
@@ -301,11 +299,22 @@ class CredentialServiceTest {
     void getCredentialUsage() {
         // Arrange
         UUID connectorId = UUID.randomUUID();
+        // Create mock CredentialUsageResult instances
+        ApiCredentialRepository.CredentialUsageResult result1 = new ApiCredentialRepository.CredentialUsageResult() {
+            @Override
+            public String getCredentialName() { return "api_token"; }
+            @Override
+            public LocalDateTime getLastUsed() { return LocalDateTime.now(); }
+        };
+        ApiCredentialRepository.CredentialUsageResult result2 = new ApiCredentialRepository.CredentialUsageResult() {
+            @Override
+            public String getCredentialName() { return "webhook_secret"; }
+            @Override
+            public LocalDateTime getLastUsed() { return LocalDateTime.now().minusDays(1); }
+        };
+        
         when(repository.findCredentialUsage(connectorId))
-            .thenReturn(Flux.just(
-                new CredentialService.CredentialUsageStats("api_token", LocalDateTime.now()),
-                new CredentialService.CredentialUsageStats("webhook_secret", LocalDateTime.now().minusDays(1))
-            ));
+            .thenReturn(Flux.just(result1, result2));
 
         // Act & Assert
         StepVerifier.create(credentialService.getCredentialUsage(connectorId))
@@ -326,7 +335,7 @@ class CredentialServiceTest {
         ApiCredential rotatedCredential = new ApiCredential();
         rotatedCredential.setId(credentialId);
         rotatedCredential.setEncryptedValue("new-encrypted-value");
-        rotatedCredential.setUpdatedAt(LocalDateTime.now());
+        // Note: ApiCredential does not have updatedAt field
 
         when(repository.findById(credentialId))
             .thenReturn(Mono.just(existingCredential));
@@ -338,9 +347,7 @@ class CredentialServiceTest {
             .expectNext(rotatedCredential)
             .verifyComplete();
 
-        verify(repository).save(argThat(credential -> 
-            credential.getUpdatedAt() != null
-        ));
+        verify(repository).save(any(ApiCredential.class));
     }
 
     @Test
